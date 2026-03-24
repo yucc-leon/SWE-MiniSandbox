@@ -1,4 +1,5 @@
 import logging
+import subprocess as _subprocess
 from typing import Any, Literal
 import venv
 from typing_extensions import Self
@@ -156,6 +157,10 @@ class SandboxDeploymentConfig(BaseModel):
     conda_env: str = "/miniconda3"
     shared_venv: str = "/SWE/shared"
     abs_tool_path: str = "/tools" 
+    use_chroot: bool = True
+    """Whether to use unshare+mount+chroot isolation. Set to False for containers
+    without CAP_SYS_ADMIN (e.g. unprivileged K8s pods). When False, the sandbox
+    runs in a plain bash session with path remapping instead of chroot."""
     type: Literal["sandbox"] = "sandbox"
     """Discriminator for (de)serialization/CLI. Do not change."""
 
@@ -178,9 +183,19 @@ class SandboxDeploymentConfig(BaseModel):
         super().__init__(**data)
         os.makedirs(self.root_base, exist_ok=True)
         os.makedirs(self.shared_venv, exist_ok=True)
-        #check the folder if exist, del and re create
-        # if os.path.exists(self.root_base):
-        #     shutil.rmtree(self.root_base)
+        # Auto-detect: if use_chroot is True but unshare is not available, fall back
+        if self.use_chroot:
+            try:
+                r = _subprocess.run(
+                    ["unshare", "--mount", "echo", "ok"],
+                    capture_output=True, timeout=5,
+                )
+                if r.returncode != 0:
+                    print("[MiniSandbox] unshare --mount failed, falling back to use_chroot=False (no CAP_SYS_ADMIN)")
+                    self.use_chroot = False
+            except (FileNotFoundError, _subprocess.TimeoutExpired):
+                print("[MiniSandbox] unshare not found, falling back to use_chroot=False")
+                self.use_chroot = False
         
         
 class SandboxDeployment(AbstractDeployment):
@@ -228,7 +243,43 @@ class SandboxDeployment(AbstractDeployment):
             self.py_version = specs.get("python", 3.10)
     def startup(self):
         """Generates the command to start the sandboxed environment."""
-        return self.startup_old()
+        if self._config.use_chroot:
+            return self.startup_old()
+        else:
+            return self.startup_nochroot()
+
+    def sandbox_path(self, path: str) -> str:
+        """Translate an absolute sandbox-internal path to the real filesystem path.
+
+        In chroot mode, /{git_folder} inside the session IS {root_dir}/{git_folder}
+        because chroot changes the root. Without chroot, we need to prepend root_dir.
+
+        Args:
+            path: absolute path as seen inside the sandbox (e.g. "/testbed", "/tools")
+
+        Returns:
+            The path to use in shell commands within the session.
+        """
+        if self._config.use_chroot:
+            return path
+        else:
+            return os.path.join(self._config.root_dir, path.lstrip('/'))
+
+    def startup_nochroot(self):
+        """Start a plain bash session without unshare/mount/chroot.
+
+        For containers without CAP_SYS_ADMIN. No filesystem isolation —
+        each sandbox instance is just an independent directory tree under root_dir.
+        The session starts in root_dir as the working directory.
+        """
+        self._ps1 = 'SHELLPS1PREFIX'
+        # Just return a bash command that cd's into root_dir
+        cmd = (
+            f"/bin/bash --noprofile --norc -c "
+            f"'export USER=${{USER:-$(whoami)}}; export PS1=\"{self._ps1}\"; "
+            f"cd {self._config.root_dir}; exec /bin/bash --noprofile --norc'"
+        )
+        return cmd + "\n"
    
     def startup_new(self):
         base_root=self._config.BASE_ROOT
@@ -337,15 +388,15 @@ class SandboxDeployment(AbstractDeployment):
         
         for bundle in self._config.bundles:
             
-            # self.env["PATH"] = f"{self.abs_tool_path}/{bundle.path.name}/bin:" + self.env["PATH"]
-            env_path_cmd=f"export PATH={self.abs_tool_path}/{bundle.path.name}/bin:$PATH"
+            abs_tool = self.sandbox_path(self.abs_tool_path)
+            env_path_cmd=f"export PATH={abs_tool}/{bundle.path.name}/bin:$PATH"
 
           
             cmds = [env_path_cmd] 
             
             if (bundle.path / "install.sh").exists():
-                cmds.append(f"cd {self.abs_tool_path}/{bundle.path.name} && source install.sh")
-            cmds.append(f"chmod +x {self.abs_tool_path}/{bundle.path.name}/bin/*")
+                cmds.append(f"cd {abs_tool}/{bundle.path.name} && source install.sh")
+            cmds.append(f"chmod +x {abs_tool}/{bundle.path.name}/bin/*")
            
             asyncio.run(self.runtime.run_in_session(BashAction(command="\n".join(cmds), timeout=100, check='raise')))
     
@@ -355,16 +406,16 @@ class SandboxDeployment(AbstractDeployment):
         
         for bundle in self._config.bundles:
             
-            # self.env["PATH"] = f"{self.abs_tool_path}/{bundle.path.name}/bin:" + self.env["PATH"]
-            env_path_cmd=f"export PATH={self.abs_tool_path}/{bundle.path.name}/bin:$PATH"
+            abs_tool = self.sandbox_path(self.abs_tool_path)
+            env_path_cmd=f"export PATH={abs_tool}/{bundle.path.name}/bin:$PATH"
 
           
             cmds = [env_path_cmd] 
             
             if (bundle.path / "install.sh").exists() and bundle.path.name =='registry':
-                cmds.append(f"cd {self.abs_tool_path}/{bundle.path.name} && source install.sh")
+                cmds.append(f"cd {abs_tool}/{bundle.path.name} && source install.sh")
                
-            cmds.append(f"chmod +x {self.abs_tool_path}/{bundle.path.name}/bin/*")
+            cmds.append(f"chmod +x {abs_tool}/{bundle.path.name}/bin/*")
            
             asyncio.run(self.runtime.run_in_session(BashAction(command="\n".join(cmds), timeout=100, check='raise')))
         
@@ -519,7 +570,8 @@ class SandboxDeployment(AbstractDeployment):
             install_repo_start_time = time.time()
             if not os.path.exists(self.cached_git_dir):
                 # pip install -e . to install the repo to current venv
-                res = asyncio.run(self.runtime.run_in_session(BashAction(command=f"cd /{self.git_folder} && source {self.venv_bin}/activate && pip install -e .", timeout=1000, check='raise')))
+                git_dir = self.sandbox_path(f"/{self.git_folder}")
+                res = asyncio.run(self.runtime.run_in_session(BashAction(command=f"cd {git_dir} && source {self.venv_bin}/activate && pip install -e .", timeout=1000, check='raise')))
             install_repo_end_time = time.time()
             install_repo_data={"install_repo_duration": install_repo_end_time - install_repo_start_time,
                             "install_repo_start_time":install_repo_start_time,
@@ -580,12 +632,28 @@ class SandboxDeployment(AbstractDeployment):
         Venv_Time_Record['venv_cp_record']=venv_cp_record 
         Venv_Time_Record['install_repo_data']=install_repo_data
         return Venv_Time_Record
+    def _rewrite_script_paths(self, script_content: str) -> str:
+        """Rewrite hardcoded sandbox-internal paths for no-chroot mode.
+
+        swebench harness generates scripts with paths like ``/testbed``,
+        ``cd /testbed``, etc.  In chroot mode these resolve correctly because
+        the chroot root IS root_dir.  Without chroot we need to prepend
+        root_dir so that ``/testbed`` becomes ``{root_dir}/testbed``.
+        """
+        if self._config.use_chroot:
+            return script_content
+        gf = self._config.git_folder  # typically "testbed"
+        # Replace /testbed (but not paths already containing root_dir)
+        rd = self._config.root_dir.rstrip('/')
+        script_content = script_content.replace(f"/{gf}", f"{rd}/{gf}")
+        return script_content
+
     def install_env(self):
         """Installs the eval environment for the sandbox deployment."""
         if self._config.data_type=="swebench":
             
             install_script_content=self.test_spec.setup_env_script+ ' \n ' +self.test_spec.install_repo_script
-            
+            install_script_content = self._rewrite_script_paths(install_script_content)
             
 
             # install_script_content="cd"
@@ -595,7 +663,7 @@ class SandboxDeployment(AbstractDeployment):
                 [
                    "#!/bin/bash",
                     # "set -uxo pipefail",
-                    f"cd /{self.git_folder}",
+                    f"cd {self.sandbox_path('/' + self.git_folder)}",
                     'which pip',
                     f"source {self.venv_bin}/activate",
                     "pip install pytest",
@@ -715,6 +783,7 @@ class SandboxDeployment(AbstractDeployment):
     def setup_env_swebench(self):
         """Sets up the evaluation environment for Swebench datasets."""
         eval_script_content=self.test_spec.eval_script
+        eval_script_content = self._rewrite_script_paths(eval_script_content)
         # 目标路径
         script_path = Path(self.root_dir) / "run_tests.sh"
 
@@ -724,7 +793,8 @@ class SandboxDeployment(AbstractDeployment):
         # 写文件
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(eval_script_content)
-        asyncio.run(self.runtime.run_in_session(BashAction(command="chmod +x /run_tests.sh && python3 -m pip install chardet", timeout=120, check='raise')))
+        run_tests_path = self.sandbox_path("/run_tests.sh")
+        asyncio.run(self.runtime.run_in_session(BashAction(command=f"chmod +x {run_tests_path} && python3 -m pip install chardet", timeout=120, check='raise')))
     def setup_env_swesmith(self):
         """Sets up the evaluation environment for Swesmith datasets."""
         test_command, _ = get_test_commands_wrapper(self.ds)
@@ -735,7 +805,7 @@ class SandboxDeployment(AbstractDeployment):
                 "#!/bin/bash",
                 # "set -uxo pipefail",
                 f"source {self.venv_bin}/activate",
-                f"cd /{self.git_folder}",
+                f"cd {self.sandbox_path('/' + self.git_folder)}",
                 f": '>>>>> Start Test Output'",
                 test_command,
                 f": '>>>>> End Test Output'",
@@ -756,7 +826,8 @@ class SandboxDeployment(AbstractDeployment):
         
         
         # self.run_command("chmod +x /run_tests.sh && python -m pip install chardet")
-        asyncio.run(self.runtime.run_in_session(BashAction(command=f"chmod +x /run_tests.sh && python -m pip install chardet", timeout=120, check='raise')))
+        run_tests_path = self.sandbox_path("/run_tests.sh")
+        asyncio.run(self.runtime.run_in_session(BashAction(command=f"chmod +x {run_tests_path} && python -m pip install chardet", timeout=120, check='raise')))
 
     
     
@@ -769,8 +840,9 @@ class SandboxDeployment(AbstractDeployment):
              os.path.basename(f).startswith('test_') and os.path.basename(f).endswith('.py') or
              os.path.basename(f).endswith('_test.py')]
         commit_id ='origin/main'
+        git_dir = self.sandbox_path(f"/{self.git_folder}")
         reset_command = (
-            f'cd "/{self.git_folder}" && '
+            f'cd "{git_dir}" && '
             f'printf "%s\\n" {" ".join(all_files)} | '
             f'xargs -n1 -I{{}} git checkout {commit_id} -- "{{}}" 2>/dev/null'
         )
@@ -863,7 +935,7 @@ class SandboxDeployment(AbstractDeployment):
                 with open(p, "wb") as f:
                     tomli_w.dump(data, f)
 
-        out= asyncio.run(self.runtime.run_in_session(BashAction(command="/run_tests.sh", timeout=timeout, check='raise'))).output
+        out= asyncio.run(self.runtime.run_in_session(BashAction(command=self.sandbox_path("/run_tests.sh"), timeout=timeout, check='raise'))).output
         eval_status_map, found = self.get_logs_eval(self.test_spec, out)
         #print('eval_status_map',eval_status_map)
         eval_ref = {
@@ -908,7 +980,7 @@ class SandboxDeployment(AbstractDeployment):
         """Calculates the reward for Swesmith datasets."""
         self.reset_swesmith_tests()
         self.setup_env_swesmith()
-        output= asyncio.run(self.runtime.run_in_session(BashAction(command="/run_tests.sh", timeout=timeout, check='raise'))).output
+        output= asyncio.run(self.runtime.run_in_session(BashAction(command=self.sandbox_path("/run_tests.sh"), timeout=timeout, check='raise'))).output
         
         
         #output2= asyncio.run(self.runtime.run_in_session(BashAction(command="cat /run_tests.sh", timeout=timeout, check='raise'))).output
@@ -1110,9 +1182,11 @@ class SandboxDeployment(AbstractDeployment):
         """
         max_num_tries = 2
         num_tries=0
+        real_dir = self.sandbox_path(dir)
         for i in range(max_num_tries):
             try:
-                output=asyncio.run(self.runtime.run_in_session(BashAction(command=f"cd /{self.git_folder} && git add -A && git diff --cached > {dir}", timeout=60, check='raise'))).output
+                git_dir = self.sandbox_path(f"/{self.git_folder}")
+                output=asyncio.run(self.runtime.run_in_session(BashAction(command=f"cd {git_dir} && git add -A && git diff --cached > {real_dir}", timeout=60, check='raise'))).output
                 break
             except Exception as e:
                 num_tries+=1

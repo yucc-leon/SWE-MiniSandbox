@@ -292,24 +292,23 @@ class GithubRepoRetryConfig(BaseModel):
             if deployment.ds['repo']=='matplotlib/matplotlib':
                 # cp /home/zeta/SWE/SWE/zip/freetype-2.6.1.tar.gz to sandbox /testbed/build
                
-                deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",'/testbed/build')
-                deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",'/testbed/build')
+                deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",deployment.sandbox_path('/testbed/build'))
+                deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",deployment.sandbox_path('/testbed/build'))
             return True
 
         
         base_commit = self.base_commit
         github_token = os.getenv("GITHUB_TOKEN", "")
         url = self._get_url_with_token(github_token)
-   
+        git_dir = deployment.sandbox_path(f"/{self.git_folder}")
         asyncio.run(
                 deployment.runtime.run_in_session(
                     BashAction(
                         command=" && ".join(
                             (
                                 
-                                'cd /',
-                                f"mkdir /{self.git_folder}" ,
-                                f"cd /{self.git_folder}",
+                                f"mkdir -p {git_dir}" ,
+                                f"cd {git_dir}",
                                 "git init",
                                 f"git remote add origin {url}"
                             )
@@ -348,8 +347,8 @@ class GithubRepoRetryConfig(BaseModel):
                 logger.warning(f"Git clone failed, retrying {count}/{try_count}...")
         if deployment.ds['repo']=='matplotlib/matplotlib':
             # cp /home/zeta/SWE/SWE/zip/freetype-2.6.1.tar.gz to sandbox /testbed/build
-            deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",'/testbed/build')
-            deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",'/testbed/build')
+            deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",deployment.sandbox_path('/testbed/build'))
+            deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",deployment.sandbox_path('/testbed/build'))
         return False
     def get_reset_commands(self) -> list[str]:
         

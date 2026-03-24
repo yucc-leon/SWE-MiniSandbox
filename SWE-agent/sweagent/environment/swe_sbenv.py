@@ -225,7 +225,7 @@ class SWEsbEnv:
             # todo: Currently has swe-ft specific change: The original repo.copy isn't called, because the repo is already
             # present. However, reset --hard <BRANCH> also doesn't work. So modified it here to do a checkout instead.
             startup_commands = [
-                f"cd /{self.repo.git_folder}",
+                f"cd {self.deployment.sandbox_path('/' + self.repo.git_folder)}",
                 "export ROOT=$(pwd -P)",
                 *self.repo.get_reset_commands(),
             ]
@@ -252,7 +252,7 @@ class SWEsbEnv:
         #     apply_patch(sandbox_root=self.deployment.root_dir,git_folder=self.deployment.git_folder,patch_str=patch,instance_id=self.deployment.root_dir,reverse=False)
         #     self.logger.info("Applied patch to repository")
         clean_diff_commands = [
-        f"cd /{self.deployment.git_folder}",
+        f"cd {self.deployment.sandbox_path('/' + self.deployment.git_folder)}",
         "git config user.email setup@swebench.config",
         "git config user.name SWE-bench",
         "git commit --allow-empty -am SWE-bench",
@@ -281,11 +281,20 @@ class SWEsbEnv:
         session_create_time = time.time()
         #self._chook.on_start_deployment()
         asyncio.run(self.deployment.start())
-        asyncio.run(
-            self.deployment.runtime.create_session(
-                CreateSandboxBashSessionRequest(startup_source=["/root/.bashrc"], startup_timeout=60,startup_cmd=self.deployment.startup())
+        startup_cmd = self.deployment.startup()
+        if self.deployment._config.use_chroot:
+            asyncio.run(
+                self.deployment.runtime.create_session(
+                    CreateSandboxBashSessionRequest(startup_source=["/root/.bashrc"], startup_timeout=60,startup_cmd=startup_cmd)
+                )
             )
-        )
+        else:
+            # No chroot: use SandboxBashSessionRequest with the plain bash startup_cmd
+            asyncio.run(
+                self.deployment.runtime.create_session(
+                    CreateSandboxBashSessionRequest(startup_source=[], startup_timeout=60,startup_cmd=startup_cmd)
+                )
+            )
         session_end_time = time.time()
         time_data={"session_duration": session_end_time - session_create_time,"session_start_time":session_create_time,"session_end_time":session_end_time}
         
