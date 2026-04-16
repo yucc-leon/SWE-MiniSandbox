@@ -23,8 +23,8 @@ Note that the `patch` field is necessary for environment validation. And for swe
 
 The `base_commit` field is used to checkout the repo to a specific commit before applying the patches. If not provided, we will use the instance_id as the commit hash. You can choose to provide this field if you want to use a specific commit for the instance.
 
-The `test_patch` field does not exist in swe-smith dataset, which means in smith tasks, all the test cases are visiable to the agent. This is different from swe-bench verified dataset, where only the test cases introduced before the fixing of the bug are visible to the agent. 
-However, in custom datasets, you can choose to provide the `test_patch` field to hide some test cases from the agent (The base_commit should not contain those cases). The `test_patch` is the patch that introduces all the test cases. During environment validation, we will first apply the `test_patch` to introduce all the test cases, and then apply the `patch` reversely to fix the bug. 
+The `test_patch` field does not exist in swe-smith dataset, which means in smith tasks, all the test cases are visiable to the agent. This is different from swe-bench verified dataset, where only the test cases introduced before the fixing of the bug are visible to the agent.
+However, in custom datasets, you can choose to provide the `test_patch` field to hide some test cases from the agent (The base_commit should not contain those cases). The `test_patch` is the patch that introduces all the test cases. During environment validation, we will first apply the `test_patch` to introduce all the test cases, and then apply the `patch` reversely to fix the bug.
 
 The `python_version` field is used to create the venv based on the corresponding python version. If not provided, we will use python 3.11 by default.
 
@@ -32,9 +32,41 @@ With the above format, you can easily adapt your custom dataset to our framework
 Smith pipeline is designed for many to one mapping from instance_id to image_name.
 For one to one mapping from instance_id to image_name, like SWE-Gym, you can simplify this process accordingly like [SWE-bench Environment Preparation](swe-bench.md) guide.
 
+## Prepare-Only First
+
+For SWE-Gym or other large custom datasets, do not rely on a first full rollout to
+discover environment issues. The recommended workflow is:
+
+1. run a prepare-only pass
+2. inspect bucket-level failures
+3. fix install/test command mappings or Python backend gaps
+4. launch the real evaluation or training rollout
+
+You can use the built-in prepare entrypoint:
+
+```bash
+cd /path/to/SWE-MiniSandbox
+
+DATASET_PATH=/path/to/custom_dataset.jsonl \
+DATA_TYPE=skyrl \
+DATASET_SPLIT=train \
+NUM_WORKERS=32 \
+PREP_NAME=custom-prepare \
+bash sh/run_sweagent_prepare_ascend.sh
+```
+
+The prepare stage will:
+
+- group items by `repo / python_version / image_name`
+- generate one representative instance per environment bucket
+- run `empty` agent prewarm only
+- write a failure report so you can fix environment buckets, not single cases
+
+This is the intended path for SWE-Gym-like datasets as well.
+
 ## Installation and Test Scripts Mapping
 You need to define the mapping from instance_id to [installation commands](https://github.com/lblankl/SWE-MiniSandbox/blob/main/sandboxdev/swesandbox/customer_instance.py#L1) and
-[test commands](https://github.com/lblankl/SWE-MiniSandbox/blob/main/sandboxdev/swesandbox/customer_instance.py#L16) for your custom dataset. 
+[test commands](https://github.com/lblankl/SWE-MiniSandbox/blob/main/sandboxdev/swesandbox/customer_instance.py#L16) for your custom dataset.
 
 For how to define the installation commands and test commands, you can refer to the existing implementations for SWE-smith [get_install_commands](https://github.com/lblankl/SWE-MiniSandbox/blob/main/R2E-Gym/src/r2egym/swesmith/utils.py#L100) and [get_test_command](https://github.com/lblankl/SWE-MiniSandbox/blob/main/R2E-Gym/src/r2egym/swesmith/utils.py#L108).
 The reward calculation function is [here](https://github.com/lblankl/SWE-MiniSandbox/blob/main/sandboxdev/swesandbox/sandbox_deployment.py#L914).

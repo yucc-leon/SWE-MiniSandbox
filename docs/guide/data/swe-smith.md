@@ -36,6 +36,35 @@ Each unique image will have a corresponding environment cache. The cache include
 -   A **venv** (shared across instances with the same `image_name`)
 -   An optional **git repo cache** (not necessary for SWE-smith; by default, we cache git repos here)
 
+### Prepare-Only Shortcut
+
+For large-scale training or validation, do not wait until agent rollout to discover
+missing Python versions, broken install commands, or cache layout issues. Use the
+prepare-only pipeline first:
+
+```bash
+basedir=/home/zeta/SWE
+cd $basedir/SWE-MiniSandbox
+
+DATASET_PATH=SWE-bench/SWE-smith-py \
+DATA_TYPE=swesmith \
+DATASET_SPLIT=train \
+LOAD_FROM_DISK=0 \
+NUM_WORKERS=60 \
+PREP_NAME=smith-prepare \
+bash sh/run_sweagent_prepare_ascend.sh
+```
+
+This stage will:
+
+- group instances by `repo / python_version / image_name`
+- pick one representative instance per environment bucket
+- run `empty` agent prewarm only, without entering normal agent rollout
+- emit a bucket failure report for environment debugging
+
+Artifacts will be written under `.runtime/ascend-prepare/<PREP_NAME>/`.
+This is the recommended first pass before launching a full SWE-smith rollout.
+
 ### Setup and Dependencies
 
 ```bash
@@ -126,11 +155,11 @@ Again, only instances marked `passed` in SWE-smith will generate environment cac
 To debug failed instances:
 
 -   The install commands are mapped in
-    
+
     [`get_install_commands_wrapper`](https://github.com/lblankl/SWE-MiniSandbox/blob/main/sandboxdev/swesandbox/sandbox_deployment.py#L59).
 
 -   The test commands are mapped in
-    
+
     [`get_test_commands_wrapper`](https://github.com/lblankl/SWE-MiniSandbox/blob/main/sandboxdev/swesandbox/sandbox_deployment.py#L66).
 
 You can inspect logs and fix the environments manually or via an LLM-based assistant.
@@ -249,7 +278,7 @@ ___
 The collected trajectories are often imbalanced across instance IDs: easy instances tend to have more trajectories than hard ones. You can balance the SFT dataset using the provided script.
 
 ```bash
-output_yaml=$output_dir/run_batch_exit_statuses.yaml 
+output_yaml=$output_dir/run_batch_exit_statuses.yaml
 json_path=$basedir/SWE-MiniSandbox/dataset/smith-sft-trajs/dataset.jsonl
 
 python /home/zeta/SWE/SWE/data/balance_data.py \

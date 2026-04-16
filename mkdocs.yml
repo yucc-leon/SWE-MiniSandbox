@@ -27,8 +27,8 @@ plugins:
             group_by_category: true
             separate_signature: true
 
-           
- 
+
+
 nav:
   - Home: index.md
   - Navigation:
@@ -39,20 +39,26 @@ nav:
         - SWE-smith Dataset: guide/data/swe-smith.md
         - SWE-bench Verified Dataset: guide/data/swe-bench.md
         - Custom Dataset: guide/data/custom-dataset.md
-      - MiniSandbox CLI API Guides: 
+      - MiniSandbox CLI API Guides:
         - SWE-Agent CLI Guide: guide/cli/sweagent.md
         - SkyRL CLI Guide: guide/cli/skyrl.md
-      - Developer Guides: 
+      - Developer Guides:
         - Architecture: guide/architecture.md
-        - API Reference: 
+        - Ascend Guide: guide/ascend.md
+        - Ascend Recovery Guide: guide/ascend-recovery.md
+        - Evaluation Modes: guide/eval-modes.md
+        - Current Evaluation Stack: guide/current-eval-stack.md
+        - Task-Submitted Inference Mode: guide/inference-task-mode.md
+        - SkyRL Ascend Adaptation: guide/skyrl-ascend-adaptation-guide.md
+        - API Reference:
           - SWE MiniSandbox Deployment API Reference: guide/api/swe-minisandbox.md
           - SWE-Rex API Reference: guide/api/swe-rex.md
           - Sky-RL API Reference: guide/api/sky-rl.md
-          - SWE-Agent API Reference: 
+          - SWE-Agent API Reference:
             - SWE-Agent Overview: guide/api/sweagent/swe-agent.md
             - Environment API Reference: guide/api/sweagent/env.md
             - Agent API Reference: guide/api/sweagent/agent.md
             - Instance API Reference: guide/api/sweagent/instance.md
             - Tool API Reference: guide/api/sweagent/tool.md
             - Batch-run API Reference: guide/api/sweagent/batch-run.md
-            
+
