@@ -5,16 +5,32 @@ import os
 from pathlib import Path
 
 
-def main():
-    state_path = Path("/roots/state.json")
-    if state_path.exists():
+def _load_state(state_path: Path) -> dict:
+    if not state_path.exists():
+        return {}
+    try:
         state = json.loads(state_path.read_text())
-    else:
-        state = {}
+    except json.JSONDecodeError:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _write_state(state_path: Path, state: dict) -> None:
+    tmp_path = state_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(state))
+    tmp_path.replace(state_path)
+
+
+def main():
+    state_path = Path("/root/state.json")
+    if not os.access(state_path.parent, os.W_OK):
+        state_path = Path.cwd() / "root" / "state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+    state = _load_state(state_path)
 
     state["working_dir"] = os.getcwd()
 
-    state_path.write_text(json.dumps(state))
+    _write_state(state_path, state)
 
 
 if __name__ == "__main__":

@@ -320,7 +320,22 @@ class BasicCLI:
         # This is done by CliApp.run from pydantic-settings
 
         try:
-            config: BaseSettings = CliApp.run(self.arg_type, remaining_args, **config_merged, cli_exit_on_error=False)  # type: ignore
+            try:
+                config: BaseSettings = CliApp.run(  # type: ignore
+                    self.arg_type,
+                    remaining_args,
+                    **config_merged,
+                    cli_exit_on_error=False,
+                )
+            except ValidationError as e:
+                # Some pydantic-settings versions incorrectly forward this kwarg into
+                # model validation. Fall back to the older call shape in that case.
+                has_cli_exit_on_error_issue = any(
+                    err.get("loc") == ("cli_exit_on_error",) for err in e.errors()
+                )
+                if not has_cli_exit_on_error_issue:
+                    raise
+                config = CliApp.run(self.arg_type, remaining_args, **config_merged)  # type: ignore
         except ValidationError as e:
             rich_print(
                 Panel.fit(

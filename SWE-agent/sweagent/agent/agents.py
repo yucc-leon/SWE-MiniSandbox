@@ -58,6 +58,56 @@ from sweagent.utils.patch_formatter import PatchFormatter
 class ExceedingTotalExecutionTimes(Exception):
     """Raised when the total execution time exceeds the limit."""
 
+
+def _build_error_diagnostics(
+    *,
+    category: str,
+    exception: Exception | None = None,
+    step: StepOutput | None = None,
+    n_format_fails: int | None = None,
+    format_failures: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {"category": category}
+    if step is not None:
+        if step.action:
+            diagnostics["last_action"] = step.action
+        if step.output:
+            diagnostics["last_model_output"] = step.output
+    if exception is not None:
+        diagnostics["exception_type"] = type(exception).__name__
+        diagnostics["exception_module"] = type(exception).__module__
+        message = getattr(exception, "message", "") or str(exception)
+        if message:
+            diagnostics["exception_message"] = message
+            diagnostics["request_timeout_like"] = "timed out" in message.lower()
+        extra = getattr(exception, "extra_info", None)
+        if isinstance(extra, dict) and extra:
+            diagnostics["exception_extra_info"] = extra
+    if n_format_fails is not None:
+        diagnostics["n_format_fails"] = n_format_fails
+    if format_failures:
+        diagnostics["format_failures"] = format_failures
+        diagnostics["last_format_failure"] = format_failures[-1]
+    return diagnostics
+
+
+def _record_format_failure(
+    format_failures: list[dict[str, Any]],
+    *,
+    failure_type: str,
+    exception: Exception,
+    step: StepOutput | None,
+    n_requeries: int,
+) -> None:
+    entry = _build_error_diagnostics(
+        category="format_requery",
+        exception=exception,
+        step=step,
+    )
+    entry["failure_type"] = failure_type
+    entry["requery_index"] = n_requeries
+    format_failures.append(entry)
+
 class TemplateConfig(BaseModel):
     """This configuration is used to define almost all message templates that are
     formatted by the agent and sent to the LM.
@@ -148,6 +198,8 @@ class TemplateConfig(BaseModel):
 
 class EmptyAgentConfig(BaseModel):
     """This configuration object specifies the behavior of an empty agent."""
+    pre_check: bool = True
+    """Whether to run environment pre-checks (golden patch + tests) before returning."""
     max_retries: int = 1
     name: str = "main"
     templates: TemplateConfig = Field(default_factory=TemplateConfig)
@@ -206,7 +258,7 @@ class DefaultAgentConfig(BaseModel):
     """Maximum number of steps the agent can take."""
     test_output: bool = True
     """Whether to record test output during reward calculation. """
-    
+
 
     max_retries: int = 1
     name: str = "main"
@@ -581,6 +633,9 @@ class DefaultAgent(AbstractAgent):
         messages = []
 
         format_dict = self._get_format_dict(**kwargs)
+        # Sandbox-backed runs still expect the repo mount to be exposed via
+        # `working_dir` in the prompt, even when using the default agent class.
+        format_dict["working_dir"] = "/" + self._env.deployment.git_folder
         for template in templates:
             try:
                 messages.append(Template(template).render(**format_dict))
@@ -679,6 +734,11 @@ class DefaultAgent(AbstractAgent):
         data = self.get_trajectory_data()
         assert self.traj_path is not None
         self.traj_path.write_text(json.dumps(data, indent=2))
+        output_dir = self.traj_path.parent
+        (output_dir / "agent_time_records.json").write_text(json.dumps(self.time_records, indent=2))
+        (output_dir / "lm_request_records.json").write_text(
+            json.dumps(self.model.get_request_records(), indent=2)
+        )
 
     def get_model_requery_history(
         self, error_template: str, *, output: str, **kwargs: str | int | float | bool | None
@@ -714,6 +774,27 @@ class DefaultAgent(AbstractAgent):
             {"role": "user", "content": error_template, "agent": self.name, "message_type": "user"},
         ]
 
+    def _capture_submission_patch(self, patch_path: str = "/root/model.patch") -> str:
+        """Capture and read the current repository patch.
+
+        Sandbox-backed environments expose `get_patch()`, which already knows how to
+        resolve the backing repository path. Older environments can still fall back to
+        the legacy `git diff` command path.
+        """
+        assert self._env is not None
+        get_patch = getattr(self._env, "get_patch", None)
+        if callable(get_patch):
+            get_patch(patch_path)
+            return self._env.read_file(patch_path, encoding="utf-8", errors="backslashreplace")
+
+        repo_name = "/"
+        if self._env.repo is not None:
+            repo_name = f"/{self._env.repo.repo_name}"
+        submission_command = f"git add -A && git diff --cached > {patch_path}"
+        self.logger.info("Executing submission command %s in %s", submission_command, repo_name)
+        self._env.execute_command(submission_command, check=True, cwd=repo_name)
+        return self._env.read_file(patch_path, encoding="utf-8", errors="backslashreplace")
+
     def attempt_autosubmission_after_error(self, step: StepOutput,reward=0) -> StepOutput:
         """For most exceptions, we attempt to still extract the patch and submit that.
         This means we send the `submit` command to the runtime and parse the output.
@@ -743,16 +824,10 @@ class DefaultAgent(AbstractAgent):
             else:
                 self.logger.info("Diff from last traj step empty.")
             return step
-        # Let us manually run the submission command and collect the output
-        repo_name = "/"
-        if self._env.repo is not None:
-            repo_name = f"/{self._env.repo.repo_name}"
-        submission_command = "git add -A && git diff --cached > /root/model.patch"
-        self.logger.info("Executing submission command %s in %s", submission_command, repo_name)
         try:
-            self._env.execute_command(submission_command, check=True, cwd=repo_name)
+            self._capture_submission_patch()
         except Exception as e:
-            self.logger.error("Failed to execute submission command, got %s", e)
+            self.logger.error("Failed to capture submission patch, got %s", e)
         # There's still hope for the submission, because the `/root/model.patch` file might have been
         # generated by the state command
         step = self.handle_submission(step, observation="", force_submission=True,reward=reward)
@@ -780,9 +855,7 @@ class DefaultAgent(AbstractAgent):
         if is_submission or force_submission:
             assert self._env is not None
             try:
-                
-                submission = self._env.read_file("/root/model.patch", encoding="utf-8", errors="backslashreplace")
-   
+                submission = self._capture_submission_patch()
             except FileNotFoundError:
                 self.logger.warning("Submission file not found, no submission was made")
                 return step
@@ -800,14 +873,14 @@ class DefaultAgent(AbstractAgent):
                 self.info['reward']=reward
                 if self.config.test_output:
                     self.info['test_output']=output
-                
+
                 # self.info['test_out']=output
                 self.info['p2p']=p2p
                 self.info['f2p']=f2p
             else:
                 self.info['reward']=0
                 self.info['test_out']='none reward'
-                
+
             if submission.strip() != "":
                 step.submission = submission
             else:
@@ -862,7 +935,10 @@ class DefaultAgent(AbstractAgent):
             action_execution_output: action execution output
         """
         if self.tools.should_block_action(step.action):
-            raise _BlockedActionError()
+            exc = _BlockedActionError("Action blocked by tool filter")
+            exc.message = "Action blocked by tool filter"  # type: ignore[attr-defined]
+            exc.extra_info = {"failure_type": "blocked_action", "blocked_action": step.action}  # type: ignore[attr-defined]
+            raise exc
 
         if step.action.strip() == "exit":
             self.logger.info("Exiting agent")
@@ -892,7 +968,7 @@ class DefaultAgent(AbstractAgent):
             if remaining == 1:
                 pass
                 #step.observation = f"{step.observation}\nREMINDER: You only have 1 turn left. Please provide the final answer"
-            
+
             elif remaining > 1 and remaining<=10:
                 pass
                 #step.observation = f"{step.observation}\nREMINDER: You have {remaining} turns left to arrive at the solution."
@@ -901,7 +977,7 @@ class DefaultAgent(AbstractAgent):
             else:
                 #Exceeded step limit
                 raise ExceedingTotalExecutionTimes()
-           
+
 
         except CommandTimeoutError:
             env_communication_end = time.time()
@@ -1032,7 +1108,13 @@ class DefaultAgent(AbstractAgent):
             step_output: step output
         """
 
-        def handle_error_with_autosubmission(exit_status: str, message: str, reward: float=0) -> StepOutput:
+        def handle_error_with_autosubmission(
+            exit_status: str,
+            message: str,
+            reward: float = 0,
+            *,
+            extra_info: dict[str, Any] | None = None,
+        ) -> StepOutput:
             """Attempts to autosubmit (extract patch from the environment) and stops the loop."""
             self.logger.warning(message)
             return self.attempt_autosubmission_after_error(
@@ -1041,6 +1123,7 @@ class DefaultAgent(AbstractAgent):
                     exit_status=exit_status,
                     output=message,
                     done=True,
+                    extra_info=extra_info or {},
                 ),
                 reward=reward
             )
@@ -1064,10 +1147,11 @@ class DefaultAgent(AbstractAgent):
             )
 
         n_format_fails = 0
+        format_failures: list[dict[str, Any]] = []
         while n_format_fails < self.max_requeries:
-        
+
             try:
-                
+
                 return self.forward(history)
 
             # Errors that are raised
@@ -1081,11 +1165,25 @@ class DefaultAgent(AbstractAgent):
 
             except FormatError as e:
                 n_format_fails += 1
+                _record_format_failure(
+                    format_failures,
+                    failure_type="format_error",
+                    exception=e,
+                    step=getattr(e, "step", None),
+                    n_requeries=n_format_fails,
+                )
                 history = handle_error_with_retry(
                     exception=e, template=self.tools.config.format_error_template, n_requeries=n_format_fails
                 )
             except _BlockedActionError as e:
                 n_format_fails += 1
+                _record_format_failure(
+                    format_failures,
+                    failure_type="blocked_action",
+                    exception=e,
+                    step=getattr(e, "step", None),
+                    n_requeries=n_format_fails,
+                )
                 history = handle_error_with_retry(
                     exception=e, template=self.tools.config.filter.blocklist_error_template, n_requeries=n_format_fails
                 )
@@ -1096,6 +1194,13 @@ class DefaultAgent(AbstractAgent):
                 pass
             except BashIncorrectSyntaxError as e:
                 n_format_fails += 1
+                _record_format_failure(
+                    format_failures,
+                    failure_type="bash_incorrect_syntax",
+                    exception=e,
+                    step=getattr(e, "step", None),
+                    n_requeries=n_format_fails,
+                )
                 history = handle_error_with_retry(
                     exception=e,
                     template=self.templates.shell_check_error_template,
@@ -1124,13 +1229,15 @@ class DefaultAgent(AbstractAgent):
                 return handle_error_with_autosubmission(
                     "exit_total_running_time",
                     "Exit due to total running time exceeded",
-                    reward=0
+                    reward=0,
+                    extra_info={"exit_diagnostics": {"category": "total_running_time_exceeded"}},
                 )
             except _TotalExecutionTimeExceeded:
                 self.logger.exception("Exiting due to total execution time exceeded", exc_info=True)
                 return handle_error_with_autosubmission(
                     "exit_total_execution_time",
                     "Exit due to total execution time exceeded",
+                    extra_info={"exit_diagnostics": {"category": "total_execution_time_exceeded"}},
                 )
 
             except CommandTimeoutError:
@@ -1138,20 +1245,28 @@ class DefaultAgent(AbstractAgent):
                 return handle_error_with_autosubmission(
                     "exit_command_timeout",
                     "Exit due to multiple consecutive command timeouts",
+                    extra_info={"exit_diagnostics": {"category": "command_timeout"}},
                 )
-            
+
             except ExceedingTotalExecutionTimes as e:
                 self.logger.exception(f"Exiting due to exceeding total execution times: {e}", exc_info=True)
                 return handle_error_with_autosubmission(
                     "exit_total_execution_times",
                     f"Exit due to exceeding total execution times: {e}",
-                    reward=0
+                    reward=0,
+                    extra_info={
+                        "exit_diagnostics": _build_error_diagnostics(
+                            category="step_limit_exceeded",
+                            exception=e,
+                        )
+                    },
                 )
 
             except ContextWindowExceededError:
                 return handle_error_with_autosubmission(
                     "exit_context",
                     "Exit due to context window",
+                    extra_info={"exit_diagnostics": {"category": "context_window_exceeded"}},
                 )
             except TotalCostLimitExceededError:
                 raise
@@ -1165,24 +1280,50 @@ class DefaultAgent(AbstractAgent):
                 return handle_error_with_autosubmission(
                     "exit_api",
                     f"Exit due to retry error: {e}",
+                    extra_info={
+                        "exit_diagnostics": _build_error_diagnostics(
+                            category="retry_error",
+                            exception=e,
+                        )
+                    },
                 )
             except SwerexException as e:
                 self.logger.exception(f"Exiting due to environment error: {e}", exc_info=True)
                 return handle_error_with_autosubmission(
                     "exit_environment_error",
                     f"Exit due to environment error: {e}",
+                    extra_info={
+                        "exit_diagnostics": _build_error_diagnostics(
+                            category="environment_error",
+                            exception=e,
+                        )
+                    },
                 )
             except RuntimeError as e:
                 self.logger.exception(f"Exiting due to runtime error: {e}", exc_info=True)
                 return handle_error_with_autosubmission(
                     "exit_error",
                     f"Exit due to runtime error: {e}",
+                    extra_info={
+                        "exit_diagnostics": _build_error_diagnostics(
+                            category="runtime_error",
+                            exception=e,
+                            step=getattr(e, "step", None),
+                        )
+                    },
                 )
             except Exception as e:
                 self.logger.exception(f"Exiting due to unknown error: {e}", exc_info=True)
                 return handle_error_with_autosubmission(
                     "exit_error",
                     f"Exit due to unknown error: {e}",
+                    extra_info={
+                        "exit_diagnostics": _build_error_diagnostics(
+                            category="unknown_error",
+                            exception=e,
+                            step=getattr(e, "step", None),
+                        )
+                    },
                 )
         self.logger.exception(
             "Exit due to repeated format/blocklist/bash syntax errors",
@@ -1191,6 +1332,13 @@ class DefaultAgent(AbstractAgent):
         return handle_error_with_autosubmission(
             "exit_format",
             "Exit due to repeated format/blocklist/bash syntax errors",
+            extra_info={
+                "exit_diagnostics": _build_error_diagnostics(
+                    category="format_requery_exhausted",
+                    n_format_fails=n_format_fails,
+                    format_failures=format_failures,
+                )
+            },
         )
 
     def add_step_to_trajectory(self, step: StepOutput) -> None:
@@ -1232,6 +1380,8 @@ class DefaultAgent(AbstractAgent):
         self.info["exit_status"] = step_output.exit_status  # type: ignore
         self.info.update(self._get_edited_files_with_context(patch=step_output.submission or ""))  # type: ignore
         self.info["model_stats"] = self.model.stats.model_dump()
+        if step_output.extra_info:
+            self.info["exit_diagnostics"] = step_output.extra_info.get("exit_diagnostics", step_output.extra_info)
 
         self.add_step_to_trajectory(step_output)
 
@@ -1253,6 +1403,9 @@ class DefaultAgent(AbstractAgent):
             traj_dir: Directory to save the trajectory to
         """
         self.setup(env=env, problem_statement=problem_statement, output_dir=output_dir)
+        # Persist the initial history/setup state immediately so abrupt exits during
+        # the first model call still leave a debuggable trajectory artifact behind.
+        self.save_trajectory()
 
         # Run action/observation loop
         self._chook.on_run_start()
@@ -1264,9 +1417,6 @@ class DefaultAgent(AbstractAgent):
         self._chook.on_run_done(trajectory=self.trajectory, info=self.info)
 
         self.logger.info("Trajectory saved to %s", self.traj_path)
-        # saving time records
-        time_record_path = output_dir / f"agent_time_records.json"
-        time_record_path.write_text(json.dumps(self.time_records, indent=2))
         # Here we want to return the "global" information (e.g., submission should
         # be the best submission instead of the last one, etc.), so we get it from the traj file
         data = self.get_trajectory_data()
@@ -1275,14 +1425,13 @@ from .agent_sandbox import DefaultAgent as SandboxAgent
 from .sky_agent_sb import DefaultAgent as SkySbAgent
 from .empty_agent import EmptyAgent
 def get_agent_from_config(config: AgentConfig) -> AbstractAgent:
-    print(config.type)
     if config.type == "default":
         return DefaultAgent.from_config(config)
     elif config.type == "sandbox":
         return SandboxAgent.from_config(config)
     elif config.type == 'skysbdefault':
         return SkySbAgent.from_config(config)
-        
+
     elif config.type == "retry":
         return RetryAgent.from_config(config)
     elif config.type == "shell":

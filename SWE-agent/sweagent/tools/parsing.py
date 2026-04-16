@@ -34,6 +34,7 @@ Or from the command line: `--agent.tools.parse_function.type=thought_action`.
 """
 
 import json
+import os
 import re
 import textwrap
 from abc import ABC, abstractmethod
@@ -266,6 +267,18 @@ class XMLFunctionCallingParser(AbstractParseFunction, BaseModel):
         if fn_name == "finish":
             fn_name = "submit"
 
+        inferred_params: dict[str, str] = {}
+        if os.environ.get("SWEAGENT_ENABLE_STR_REPLACE_EDITOR_ALIASES") == "1":
+            if fn_name.startswith("str_replace_editor"):
+                for delimiter in (".", "=", "_"):
+                    prefix = f"str_replace_editor{delimiter}"
+                    if fn_name.startswith(prefix):
+                        suffix = fn_name[len(prefix) :].strip()
+                        if suffix:
+                            fn_name = "str_replace_editor"
+                            inferred_params["command"] = suffix
+                        break
+
         fn_body = fn_match.group(2)
         thought = model_response["message"][: fn_match.start()] + model_response["message"][fn_match.end() :]
         thought = thought.strip()
@@ -280,6 +293,8 @@ class XMLFunctionCallingParser(AbstractParseFunction, BaseModel):
             param[0]: re.sub(r"^\n|\n$", "", param[1])
             for param in re.findall(FN_PARAM_REGEX_PATTERN, fn_body, re.DOTALL)
         }
+        for key, value in inferred_params.items():
+            params_dict.setdefault(key, value)
 
         if "view_range" in params_dict:
             # Check that value is format as [x, y]
@@ -406,6 +421,8 @@ class FunctionCallingParser(AbstractParseFunction, BaseModel):
             except json.JSONDecodeError:
                 msg = "Tool call arguments are not valid JSON."
                 raise FunctionCallingFormatError(msg, "invalid_json")
+        else:
+            values = tool_call["function"]["arguments"]
         required_args = {arg.name for arg in command.arguments if arg.required}
         missing_args = required_args - values.keys()
         if missing_args:

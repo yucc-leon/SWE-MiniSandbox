@@ -1,4 +1,5 @@
 import json
+import platform
 import random
 import re
 from abc import ABC, abstractmethod
@@ -33,6 +34,23 @@ from swerex.deployment.config import (
     LocalDeploymentConfig,
 )
 logger = get_logger("swea-config", emoji="🔧")
+
+
+def _normalize_swebench_arch(raw_arch: str | None = None) -> str:
+    arch = (raw_arch or platform.machine()).lower()
+    if arch in {"x86_64", "amd64"}:
+        return "x86_64"
+    if arch in {"aarch64", "arm64"}:
+        return "arm64"
+    return arch
+
+
+def _rewrite_swebench_image_arch(image_name: str, target_arch: str) -> str:
+    return re.sub(
+        r"(sweb\.(?:eval|env|base)\.)(x86_64|arm64)(\.)",
+        rf"\1{target_arch}\3",
+        image_name,
+    )
 
 
 class AbstractInstanceSource(ABC):
@@ -196,13 +214,20 @@ class SimpleBatchInstance(BaseModel):
             instance: A dictionary representing a single instance from the SWE-bench dataset.
         """
         iid = instance["instance_id"]
+        target_arch = _normalize_swebench_arch()
         image_name = instance.get("image_name", None)
         if image_name is None:
             # Docker doesn't allow double underscore, so we replace them with a magic token
             id_docker_compatible = iid.replace("__", "_1776_")
-            image_name = f"docker.io/swebench/sweb.eval.x86_64.{id_docker_compatible}:latest".lower()
-            iid_image_name=f"docker.io/swebench/sweb.eval.x86_64.{id_docker_compatible}".lower()
-            instance['image_name']=iid_image_name
+            image_name = f"docker.io/swebench/sweb.eval.{target_arch}.{id_docker_compatible}:latest".lower()
+            iid_image_name = f"docker.io/swebench/sweb.eval.{target_arch}.{id_docker_compatible}".lower()
+            instance["image_name"] = iid_image_name
+        else:
+            image_name = _rewrite_swebench_image_arch(str(image_name), target_arch)
+            instance["image_name"] = _rewrite_swebench_image_arch(
+                str(instance.get("image_name", image_name)).removesuffix(":latest"),
+                target_arch,
+            )
         extra_fields = {}
         if "image_assets" in instance:
             issue_images = json.loads(instance["image_assets"])["problem_statement"]
@@ -248,6 +273,12 @@ class InstancesFromFile(BaseModel, AbstractInstanceSource):
 
     def get_instance_configs(self) -> list[BatchInstance]:
         instance_dicts = load_file(self.path)
+        simple_instances = [SimpleBatchInstance.model_validate(instance_dict) for instance_dict in instance_dicts]
+        instances = [instance.to_full_batch_instance(self.deployment) for instance in simple_instances]
+        return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
+
+    def get_instance_configs_ds(self, dataset) -> list[BatchInstance]:
+        instance_dicts = dataset if dataset is not None else load_file(self.path)
         simple_instances = [SimpleBatchInstance.model_validate(instance_dict) for instance_dict in instance_dicts]
         instances = [instance.to_full_batch_instance(self.deployment) for instance in simple_instances]
         return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)

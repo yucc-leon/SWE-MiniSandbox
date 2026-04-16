@@ -18,6 +18,31 @@ from swebench.harness.utils import get_modified_files
 from functools import cache
 import yaml
 
+
+def _package_key(spec: str) -> str | None:
+    """Extract a normalized package key from a simple pip requirement string."""
+    if not spec or spec.startswith("-"):
+        return None
+    match = re.match(r"^\s*([A-Za-z0-9_.-]+)", spec)
+    if match is None:
+        return None
+    return match.group(1).lower().replace("_", "-")
+
+
+def _merge_package_specs(base_specs: list[str], extra_specs: list[str]) -> list[str]:
+    """Merge pip specs, preferring the later entry when the package key overlaps."""
+    merged: list[str] = []
+    index_by_key: dict[str, int] = {}
+    for spec in [*base_specs, *extra_specs]:
+        key = _package_key(spec)
+        if key is not None and key in index_by_key:
+            merged[index_by_key[key]] = spec
+            continue
+        if key is not None:
+            index_by_key[key] = len(merged)
+        merged.append(spec)
+    return merged
+
 def extract_pip_requirements(env_yml_str):
     # 读取 environment.yml
     data = yaml.safe_load(env_yml_str)
@@ -39,7 +64,7 @@ def extract_pip_requirements(env_yml_str):
     # 去重
     requirements = list(dict.fromkeys(requirements))
 
-   
+
 
     return "\n".join(requirements)
 HEADERS = {
@@ -302,6 +327,7 @@ def make_repo_script_list_py(
     """
     setup_commands = [
         f"source {env_path}/bin/activate",
+        "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy",
         f"chmod -R 777 /{env_name}",  # So nonroot user can run tests
         f"cd /{env_name}",
         f"git reset --hard {base_commit}",
@@ -346,6 +372,7 @@ def make_env_script_list_py(instance, specs, env_name,env_path) -> list:
     HEREDOC_DELIMITER = "EOF_59812759871"
     reqs_commands = [
         f"source {env_path}/bin/activate",
+        "unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy",
     ]
     if instance['repo']=="django/django":
         additional_reqs=[
@@ -358,6 +385,7 @@ def make_env_script_list_py(instance, specs, env_name,env_path) -> list:
         reqs_commands.extend(additional_reqs)
     # Create conda environment according to install instructinos
     pkgs = specs.get("packages", "")
+    pip_packages = list(specs.get("pip_packages", []))
     if pkgs == "requirements.txt":
         # Create environment
         # cmd = f"conda create -n {env_name} python={specs['python']} -y"
@@ -373,26 +401,40 @@ def make_env_script_list_py(instance, specs, env_name,env_path) -> list:
         reqs_commands.append(cmd)
         reqs_commands.append(f"rm -f {path_to_reqs}")
     elif pkgs == "environment.yml":
-        # Create environment from yml
-        reqs = get_environment_yml(instance, env_name)
-        reqs=extract_pip_requirements(reqs)
-        path_to_reqs = "/requirements.txt"
-        reqs_commands.append(
-            f"cat <<'{HEREDOC_DELIMITER}' > {path_to_reqs}\n{reqs}\n{HEREDOC_DELIMITER}"
-        )
-        cmd = f"python -m pip install -r {path_to_reqs}"
-        reqs_commands.append(cmd)
-        reqs_commands.append(f"rm -f {path_to_reqs}")
+        # Prefer environment.yml when the spec asks for it, but fall back to
+        # requirements.txt for repos/commits where the harness constant is too
+        # optimistic and the file is absent.
+        reqs = ""
+        try:
+            reqs = get_environment_yml(instance, env_name)
+            reqs = extract_pip_requirements(reqs)
+        except ValueError:
+            try:
+                if instance["repo"] in MAP_REPO_TO_REQS_PATHS:
+                    reqs = get_requirements(instance)
+            except ValueError:
+                reqs = ""
+        if reqs.strip():
+            path_to_reqs = "/requirements.txt"
+            reqs_commands.append(
+                f"cat <<'{HEREDOC_DELIMITER}' > {path_to_reqs}\n{reqs}\n{HEREDOC_DELIMITER}"
+            )
+            cmd = f"python -m pip install -r {path_to_reqs}"
+            reqs_commands.append(cmd)
+            reqs_commands.append(f"rm -f {path_to_reqs}")
     else:
         # Create environment + install dependencies
-        cmd = f"pip install {pkgs}"
+        base_packages = [pkg for pkg in pkgs.split() if pkg]
+        merged_packages = _merge_package_specs(base_packages, pip_packages)
+        cmd = f"python -m pip install {' '.join(merged_packages)}"
         reqs_commands.append(cmd)
+        pip_packages = []
 
-    
+
 
     # Install additional packages if specified
-    if "pip_packages" in specs:
-        pip_packages = " ".join(specs["pip_packages"])
+    if pip_packages:
+        pip_packages = " ".join(pip_packages)
         cmd = f"python -m pip install {pip_packages}"
         reqs_commands.append(cmd)
     return reqs_commands
@@ -444,7 +486,7 @@ def map_id_repo_to_eval(instance_id,repo,instance):
             ]
         )
     elif instance_id=="pytest-dev__pytest-6202":
-   
+
         test_command = " ".join(
             [
                 f'''{MAP_REPO_VERSION_TO_SPECS[instance["repo"]][instance["version"]][
@@ -453,7 +495,7 @@ def map_id_repo_to_eval(instance_id,repo,instance):
                 *get_test_directives(instance),
             ]
         )
-    
+
     else:
         test_command = " ".join(
             [
@@ -484,11 +526,11 @@ def make_eval_script_list_py(
         'export HTTPBIN_URL=http://127.0.0.1:5000/',
         f"cd /{env_name}",
     ]
-    
+
     if "eval_commands" in specs:
         eval_commands += specs["eval_commands"]
 
-   
+
     eval_commands += [
         f"git config --add safe.directory {env_name}",  # for nonroot user
         f"cd /{env_name}",
@@ -496,17 +538,17 @@ def make_eval_script_list_py(
         "git status",
         "git show",
         f"git -c core.fileMode=false --no-pager diff {base_commit}",
-      
+
     ]
     if "install" in specs:
         eval_commands.append(specs["install"])
-   
+
     eval_commands += [
         # reset_tests_command,
         # 'echo "PATH before pytest: $PATH"',
         # 'which pytest',
         # apply_test_patch_command,
-        'unset HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy',
+        'unset HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy',
         f": '{START_TEST_OUTPUT}'",
         test_command,
         f": '{END_TEST_OUTPUT}'",

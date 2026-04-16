@@ -48,5 +48,13 @@ class SetStatusEnvironmentHook(EnvHook):
 
     def on_copying_shared_venv(self):
         self._update("Copying shared virtual environment")
+    def on_creating_shared_venv(self):
+        self._update("Creating shared virtual environment")
+    def on_installing_repo_env(self):
+        self._update("Installing repo environment")
+    def on_packing_shared_venv(self):
+        self._update("Packing shared virtual environment")
+    def on_caching_git_repo(self):
+        self._update("Caching git repository")
 
 

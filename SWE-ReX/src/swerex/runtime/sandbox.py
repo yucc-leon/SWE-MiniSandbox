@@ -95,7 +95,8 @@ def _split_bash_command(inpt: str) -> list[str]:
 
 def _strip_control_chars(s: str) -> str:
     ansi_escape = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
-    return ansi_escape.sub("", s).replace("\r\n", "\n")
+    s = ansi_escape.sub("", s)
+    return s.replace("\r\n", "\n").replace("\r", "")
 
 # def _strip_control_chars(s: str) -> str:
 #     # 提取 exit code 行后再处理

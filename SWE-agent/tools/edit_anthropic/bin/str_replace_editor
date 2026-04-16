@@ -7,12 +7,13 @@ However, we made it python 3.6 compatible and stateless (all state is saved in a
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import io
 
 from registry import registry as REGISTRY
@@ -351,6 +352,29 @@ class EditTool:
         super().__init__()
         self._encoding = None
 
+    def _display_replacements(self):
+        root_dir = os.environ.get("SWE_SANDBOX_ROOT_DIR", "").rstrip("/")
+        git_folder = os.environ.get("SWE_SANDBOX_GIT_FOLDER", "").lstrip("/")
+        tool_path = os.environ.get("SWE_SANDBOX_TOOL_PATH", "/tools").rstrip("/")
+        if not root_dir:
+            return []
+        replacements = [
+            (f"{root_dir}/{git_folder}", f"/{git_folder}") if git_folder else None,
+            (f"{root_dir}/{tool_path.lstrip('/')}", tool_path),
+            (f"{root_dir}/root", "/root"),
+            (f"{root_dir}/run_tests.sh", "/run_tests.sh"),
+            (f"{root_dir}/res.patch", "/res.patch"),
+        ]
+        return [item for item in replacements if item is not None]
+
+    def _rewrite_display_text(self, text: str) -> str:
+        for src, dst in sorted(self._display_replacements(), key=lambda item: len(item[0]), reverse=True):
+            text = text.replace(src, dst)
+        return text
+
+    def _display_path(self, path: Union[Path, str]) -> str:
+        return self._rewrite_display_text(str(path))
+
     @property
     def _file_history(self):
         return defaultdict(list, json.loads(REGISTRY.get("file_history", "{}")))
@@ -450,7 +474,11 @@ class EditTool:
             stderr = out.stderr.decode()
 
             if not stderr:
-                stdout = f"Here's the files and directories up to 2 levels deep in {path}, excluding hidden items:\n{stdout}\n"
+                stdout = self._rewrite_display_text(stdout)
+                stdout = (
+                    "Here's the files and directories up to 2 levels deep in "
+                    f"{self._display_path(path)}, excluding hidden items:\n{stdout}\n"
+                )
                 print(stdout)
             return
 
@@ -509,7 +537,7 @@ class EditTool:
             init_line = 1
 
         # init_line is 1-based
-        print(self._make_output(file_content, str(path), init_line=init_line))
+        print(self._make_output(file_content, self._display_path(path), init_line=init_line))
 
     def str_replace(self, path: Path, old_str: str, new_str: Optional[str]):
         """Implement the str_replace command, which replaces old_str with new_str in the file content"""
@@ -521,13 +549,17 @@ class EditTool:
         # Check if old_str is unique in the file
         occurrences = file_content.count(old_str)
         if occurrences == 0:
-            print(f"No replacement was performed, old_str `{old_str}` did not appear verbatim in {path}.")
+            print(
+                "No replacement was performed, old_str "
+                f"`{old_str}` did not appear verbatim in {self._display_path(path)}."
+            )
             sys.exit(15)
         elif occurrences > 1:
             file_content_lines = file_content.split("\n")
             lines = [idx + 1 for idx, line in enumerate(file_content_lines) if old_str in line]
             print(
-                f"No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {lines}. Please ensure it is unique"
+                "No replacement was performed. Multiple occurrences of old_str "
+                f"`{old_str}` in lines {lines}. Please ensure it is unique"
             )
             sys.exit(16)
 
@@ -540,7 +572,7 @@ class EditTool:
             try:
                 pre_edit_lint = flake8(str(path))
             except Exception as e:
-                print(f"Warning: Failed to run pre-edit linter on {path}: {e}")
+                print(f"Warning: Failed to run pre-edit linter on {self._display_path(path)}: {e}")
 
         # Replace old_str with new_str
         new_file_content = file_content.replace(old_str, new_str)
@@ -553,7 +585,7 @@ class EditTool:
             try:
                 post_edit_lint = flake8(str(path))
             except Exception as e:
-                print(f"Warning: Failed to run post-edit linter on {path}: {e}")
+                print(f"Warning: Failed to run post-edit linter on {self._display_path(path)}: {e}")
 
         epilogue = ""
         if post_edit_lint:
@@ -584,8 +616,9 @@ class EditTool:
         snippet = "\n".join(new_file_content.split("\n")[start_line - 1 : end_line])
 
         # Prepare the success message
-        success_msg = f"The file {path} has been edited. "
-        success_msg += self._make_output(snippet, f"a snippet of {path}", start_line)
+        display_path = self._display_path(path)
+        success_msg = f"The file {display_path} has been edited. "
+        success_msg += self._make_output(snippet, f"a snippet of {display_path}", start_line)
         success_msg += "Review the changes and make sure they are as expected. Edit the file again if necessary."
         success_msg += epilogue
 
@@ -620,7 +653,7 @@ class EditTool:
 
         # todo: Also expand these windows
 
-        success_msg = f"The file {path} has been edited. "
+        success_msg = f"The file {self._display_path(path)} has been edited. "
         success_msg += self._make_output(
             snippet,
             "a snippet of the edited file",
@@ -632,13 +665,16 @@ class EditTool:
     def undo_edit(self, path: Path):
         """Implement the undo_edit command."""
         if not self._file_history[path]:
-            print(f"No edit history found for {path}.")
+            print(f"No edit history found for {self._display_path(path)}.")
             sys.exit(18)
 
         old_text = self._file_history[path].pop()
         self.write_file(path, old_text)
 
-        print(f"Last edit to {path} undone successfully. {self._make_output(old_text, str(path))}")
+        print(
+            f"Last edit to {self._display_path(path)} undone successfully. "
+            f"{self._make_output(old_text, self._display_path(path))}"
+        )
 
     def read_file(self, path: Path):
         """Read the content of a file from a given path; raise a ToolError if an error occurs."""
@@ -657,7 +693,7 @@ class EditTool:
             else:
                 break
         else:
-            print(f"Ran into UnicodeDecodeError {exception} while trying to read {path}")
+            print(f"Ran into UnicodeDecodeError {exception} while trying to read {self._display_path(path)}")
             sys.exit(19)
         return text
 
@@ -666,7 +702,7 @@ class EditTool:
         try:
             path.write_text(file, encoding=self._encoding or "utf-8")
         except Exception as e:
-            print(f"Ran into {e} while trying to write to {path}")
+            print(f"Ran into {e} while trying to write to {self._display_path(path)}")
             sys.exit(20)
 
     def _make_output(

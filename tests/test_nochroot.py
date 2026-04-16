@@ -89,6 +89,9 @@ def test_startup_nochroot():
     cmd = (
         f"/bin/bash --noprofile --norc -c "
         f"'export USER=${{USER:-$(whoami)}}; export PS1=\"{ps1}\"; "
+        f"export SWE_SANDBOX_ROOT_DIR=\"{root_dir}\"; "
+        f"export SWE_SANDBOX_GIT_FOLDER=\"testbed\"; "
+        f"export SWE_SANDBOX_TOOL_PATH=\"/tools\"; "
         f"cd {root_dir}; exec /bin/bash --noprofile --norc'"
     )
     cmd += "\n"
@@ -97,6 +100,9 @@ def test_startup_nochroot():
         ("包含 /bin/bash", "/bin/bash" in cmd),
         ("包含 cd root_dir", f"cd {root_dir}" in cmd),
         ("包含 PS1 设置", ps1 in cmd),
+        ("包含 sandbox root 环境变量", f"SWE_SANDBOX_ROOT_DIR=\"{root_dir}\"" in cmd),
+        ("包含 git_folder 环境变量", "SWE_SANDBOX_GIT_FOLDER=\"testbed\"" in cmd),
+        ("包含 tool_path 环境变量", "SWE_SANDBOX_TOOL_PATH=\"/tools\"" in cmd),
         ("以换行结尾", cmd.endswith("\n")),
         ("不包含 unshare", "unshare" not in cmd),
         ("不包含 chroot", "chroot" not in cmd),
@@ -178,7 +184,87 @@ git checkout abc123 tests/test_foo.py
     return all_pass
 
 
-# ── 5. 多实例并发目录创建 ────────────────────────────────────────
+# ── 5. rewrite_observation_paths 反向映射 ────────────────────────
+
+def test_rewrite_observation_paths():
+    """验证 no-chroot 输出会被映射回逻辑路径而不是泄露宿主机路径."""
+    print("=" * 60)
+    print("TEST 5: rewrite_observation_paths() 反向映射")
+
+    root_dir = "/sandbox/django__django-16379_a1b2c3"
+    replacements = {
+        f"{root_dir}/testbed": "/testbed",
+        f"{root_dir}/tools": "/tools",
+        f"{root_dir}/root": "/root",
+        f"{root_dir}/run_tests.sh": "/run_tests.sh",
+        f"{root_dir}/res.patch": "/res.patch",
+    }
+
+    def rewrite(output):
+        rewritten = output
+        for real_path, logical_path in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+            rewritten = rewritten.replace(real_path, logical_path)
+        return rewritten
+
+    original = "\n".join(
+        [
+            f"{root_dir}/testbed/django/db/models/base.py",
+            f"{root_dir}/tools/edit_anthropic/bin/str_replace_editor",
+            f"Applying patch from {root_dir}/res.patch",
+            f"bash {root_dir}/run_tests.sh",
+        ]
+    )
+    rewritten = rewrite(original)
+
+    checks = [
+        ("testbed 路径被收敛", "/testbed/django/db/models/base.py" in rewritten),
+        ("tools 路径被收敛", "/tools/edit_anthropic/bin/str_replace_editor" in rewritten),
+        ("res.patch 路径被收敛", "Applying patch from /res.patch" in rewritten),
+        ("run_tests.sh 路径被收敛", "bash /run_tests.sh" in rewritten),
+        ("不再泄露 root_dir", root_dir not in rewritten),
+    ]
+
+    all_pass = True
+    for desc, ok in checks:
+        status = "✅" if ok else "❌"
+        if not ok:
+            all_pass = False
+        print(f"  {status} {desc}")
+
+    return all_pass
+
+
+# ── 6. runtime 控制字符清理 ─────────────────────────────────────
+
+def test_strip_control_chars():
+    """验证 runtime 会清掉裸 CR，避免 observation 出现大量 \\r 噪音."""
+    print("=" * 60)
+    print("TEST 6: _strip_control_chars() 清理裸 CR")
+
+    def strip_control_chars(s: str) -> str:
+        return s.replace("\r\n", "\n").replace("\r", "")
+
+    original = "\rHere's the result\r\r\rNo replacement was performed\r\nline2\r"
+    cleaned = strip_control_chars(original)
+
+    checks = [
+        ("保留正文", "No replacement was performed" in cleaned),
+        ("CRLF 归一化为 LF", "\r\n" not in cleaned and "line2" in cleaned),
+        ("裸 CR 被清掉", "\r" not in cleaned),
+        ("前缀不再有回车", cleaned.startswith("Here's the result")),
+    ]
+
+    all_pass = True
+    for desc, ok in checks:
+        status = "✅" if ok else "❌"
+        if not ok:
+            all_pass = False
+        print(f"  {status} {desc}")
+
+    return all_pass
+
+
+# ── 7. 多实例并发目录创建 ────────────────────────────────────────
 
 def test_concurrent_directory_creation():
     """验证多个沙箱实例并发创建目录不冲突."""
@@ -227,7 +313,7 @@ def test_concurrent_directory_creation():
     return all_pass
 
 
-# ── 6. 端到端: 在真实 bash session 中验证 no-chroot 启动 ────────
+# ── 7. 端到端: 在真实 bash session 中验证 no-chroot 启动 ────────
 
 def test_nochroot_bash_session():
     """在真实 bash 中验证 no-chroot 启动命令能正常工作."""
@@ -302,6 +388,8 @@ def main():
     results["sandbox_path"] = test_sandbox_path()
     results["startup_nochroot"] = test_startup_nochroot()
     results["rewrite_script_paths"] = test_rewrite_script_paths()
+    results["rewrite_observation_paths"] = test_rewrite_observation_paths()
+    results["strip_control_chars"] = test_strip_control_chars()
     results["concurrent_dirs"] = test_concurrent_directory_creation()
     results["bash_session_e2e"] = test_nochroot_bash_session()
 

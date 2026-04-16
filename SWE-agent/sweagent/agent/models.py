@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any, Literal
+from openai import BadRequestError as OpenAIBadRequestError
 from openai import OpenAI
 import litellm
 import litellm.types.utils
@@ -45,11 +46,78 @@ try:
 except ImportError:
     readline = None
 
+try:
+    from tokenizers import Tokenizer as HFTokenizer
+except ImportError:
+    HFTokenizer = None
+
+try:
+    from transformers import AutoTokenizer
+except ImportError:
+    AutoTokenizer = None
+
 litellm.suppress_debug_info = True
 
 
 _THREADS_THAT_USED_API_KEYS = []
 """Keeps track of thread orders so that we can choose the same API key for the same thread."""
+
+
+def _infer_local_openai_model_path(model_name: str) -> str | None:
+    """Return the local model path for openai-compatible local models."""
+    prefix = "openai//"
+    if model_name.startswith("/") and Path(model_name).exists():
+        return model_name
+    if not model_name.startswith(prefix):
+        return None
+    raw_model_path = model_name[len(prefix) :]
+    if not raw_model_path:
+        return None
+    candidates = [raw_model_path]
+    if not raw_model_path.startswith("/"):
+        candidates.append(f"/{raw_model_path}")
+    for model_path in candidates:
+        if Path(model_path).exists():
+            return model_path
+    return None
+
+
+def _load_local_tokenizer(model_path: str) -> dict[str, Any] | None:
+    """Load a local tokenizer.json into litellm's custom_tokenizer format."""
+    if HFTokenizer is None:
+        return None
+    tokenizer_json = Path(model_path) / "tokenizer.json"
+    if not tokenizer_json.is_file():
+        return None
+    return {
+        "type": "huggingface_tokenizer",
+        "tokenizer": HFTokenizer.from_file(str(tokenizer_json)),
+        "identifier": model_path,
+    }
+
+
+def _load_local_chat_tokenizer(model_path: str) -> Any | None:
+    """Load a local transformers tokenizer for exact chat-template token counting."""
+    if AutoTokenizer is None:
+        return None
+    try:
+        return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, local_files_only=True)
+    except Exception:
+        return None
+
+
+def _looks_like_context_window_error(error: Exception) -> bool:
+    """Best-effort classifier for provider-specific context-length failures."""
+    message = str(error).lower()
+    patterns = (
+        "context length",
+        "maximum context length",
+        "longer than the model's context length",
+        "input tokens",
+        "too many tokens",
+        "prompt is too long",
+    )
+    return any(pattern in message for pattern in patterns)
 
 
 class RetryConfig(PydanticBaseModel):
@@ -315,6 +383,9 @@ class AbstractModel(ABC):
 
     def reset_stats(self):
         self.stats = InstanceStats()
+
+    def get_request_records(self) -> list[dict[str, Any]]:
+        return []
 
     @abstractmethod
     def query(self, history: History, action_prompt: str = "> ") -> dict: ...
@@ -613,6 +684,7 @@ class LiteLLMModel(AbstractModel):
         self.n_calls=0
         self.tools = tools
         self.logger = get_logger("swea-lm", emoji="🤖")
+        self._request_records: list[dict[str, Any]] = []
 
         if tools.use_function_calling:
             if not litellm.utils.supports_function_calling(model=self.config.name):
@@ -651,8 +723,20 @@ class LiteLLMModel(AbstractModel):
 
         self.lm_provider = litellm.model_cost.get(self.config.name, {}).get("litellm_provider", self.config.name)
         self.custom_tokenizer = None
-        if self.config.custom_tokenizer is not None:
-            self.custom_tokenizer = litellm.utils.create_pretrained_tokenizer(**self.config.custom_tokenizer)
+        self.chat_tokenizer = None
+        self.local_openai_model_path = _infer_local_openai_model_path(self.config.name)
+        custom_tokenizer_config = self.config.custom_tokenizer
+        if custom_tokenizer_config is None:
+            local_model_path = self.local_openai_model_path
+            if local_model_path is not None:
+                self.custom_tokenizer = _load_local_tokenizer(local_model_path)
+                self.chat_tokenizer = _load_local_chat_tokenizer(local_model_path)
+                if self.custom_tokenizer is not None:
+                    self.logger.info("Using local tokenizer.json from %s for token counting", local_model_path)
+                if self.chat_tokenizer is not None:
+                    self.logger.info("Using local chat template from %s for prompt length checks", local_model_path)
+        elif custom_tokenizer_config is not None:
+            self.custom_tokenizer = litellm.utils.create_pretrained_tokenizer(**custom_tokenizer_config)
 
     @property
     def instance_cost_limit(self) -> float:
@@ -706,6 +790,207 @@ class LiteLLMModel(AbstractModel):
         with GLOBAL_STATS_LOCK:
             GLOBAL_STATS.last_query_timestamp = time.time()
 
+    def _count_request_tokens(self, messages: list[dict[str, Any]]) -> int:
+        if self.chat_tokenizer is not None:
+            try:
+                kwargs: dict[str, Any] = {"tokenize": True, "add_generation_prompt": True}
+                if self.tools.use_function_calling:
+                    kwargs["tools"] = self.tools.tools
+                tokens = self.chat_tokenizer.apply_chat_template(messages, **kwargs)
+                return len(tokens)
+            except Exception as e:
+                self.logger.debug("Falling back to litellm token counter after chat-template count failed: %s", e)
+        return litellm.utils.token_counter(
+            messages=messages,
+            model=(
+                self.custom_tokenizer.get("identifier", self.config.name)
+                if self.custom_tokenizer is not None
+                else self.config.name
+            ),
+            custom_tokenizer=self.custom_tokenizer,
+        )
+
+    def get_request_records(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self._request_records)
+
+    def _record_request(
+        self,
+        *,
+        provider: str,
+        model_name: str,
+        api_base: str | None,
+        input_tokens: int,
+        output_tokens: int | None,
+        message_count: int,
+        message_chars: int,
+        tool_count: int,
+        request_timeout_s: float,
+        duration_s: float,
+        temperature: float | None,
+        top_p: float | None,
+        n: int | None,
+        status: str,
+        exception: Exception | None = None,
+    ) -> None:
+        record: dict[str, Any] = {
+            "request_index": len(self._request_records) + 1,
+            "provider": provider,
+            "model_name": model_name,
+            "api_base": api_base,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "message_count": message_count,
+            "message_chars": message_chars,
+            "tool_count": tool_count,
+            "request_timeout_s": float(request_timeout_s),
+            "duration_s": float(duration_s),
+            "temperature": temperature,
+            "top_p": top_p,
+            "n": n,
+            "status": status,
+            "used_function_calling": bool(self.tools.use_function_calling),
+        }
+        if exception is not None:
+            message = str(exception)
+            record.update(
+                {
+                    "exception_type": type(exception).__name__,
+                    "exception_module": type(exception).__module__,
+                    "exception_message": message,
+                    "request_timeout_like": "timed out" in message.lower(),
+                }
+            )
+        self._request_records.append(record)
+        self.logger.info(
+            "lm request provider=%s status=%s duration=%.2fs timeout=%.2fs input_tokens=%s output_tokens=%s messages=%s chars=%s tools=%s model=%s",
+            provider,
+            status,
+            duration_s,
+            request_timeout_s,
+            input_tokens,
+            output_tokens if output_tokens is not None else "n/a",
+            message_count,
+            message_chars,
+            tool_count,
+            model_name,
+        )
+
+    def _query_local_openai_server(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        n: int | None = None,
+        temperature: float | None = None,
+        input_tokens: int,
+    ) -> list[dict]:
+        if self.local_openai_model_path is None or self.config.api_base is None:
+            msg = "local openai server query requested without local model path/api_base"
+            raise ModelConfigurationError(msg)
+        request_timeout_s = float(self.config.timeout)
+        client = OpenAI(
+            base_url=self.config.api_base,
+            api_key=self.config.choose_api_key() or "EMPTY",
+            timeout=request_timeout_s,
+            max_retries=0,
+        )
+        request_temperature = self.config.temperature if temperature is None else temperature
+        request_top_p = self.config.top_p
+        message_chars = sum(len(json.dumps(message, ensure_ascii=False)) for message in messages)
+        tool_count = len(self.tools.tools) if self.tools.use_function_calling else 0
+        request_kwargs: dict[str, Any] = {
+            "model": self.local_openai_model_path,
+            "messages": messages,
+            "temperature": request_temperature,
+        }
+        if request_top_p is not None:
+            request_kwargs["top_p"] = request_top_p
+        if n is not None:
+            request_kwargs["n"] = n
+        if self.tools.use_function_calling:
+            request_kwargs["tools"] = self.tools.tools
+        request_kwargs.update(self.config.completion_kwargs)
+        start = time.time()
+        try:
+            response = client.chat.completions.create(**request_kwargs)
+        except OpenAIBadRequestError as e:
+            self._record_request(
+                provider="local_openai",
+                model_name=self.local_openai_model_path,
+                api_base=self.config.api_base,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                message_count=len(messages),
+                message_chars=message_chars,
+                tool_count=tool_count,
+                request_timeout_s=request_timeout_s,
+                duration_s=time.time() - start,
+                temperature=request_temperature,
+                top_p=request_top_p,
+                n=n,
+                status="error",
+                exception=e,
+            )
+            if _looks_like_context_window_error(e):
+                raise ContextWindowExceededError from e
+            raise
+        except Exception as e:
+            self._record_request(
+                provider="local_openai",
+                model_name=self.local_openai_model_path,
+                api_base=self.config.api_base,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                message_count=len(messages),
+                message_chars=message_chars,
+                tool_count=tool_count,
+                request_timeout_s=request_timeout_s,
+                duration_s=time.time() - start,
+                temperature=request_temperature,
+                top_p=request_top_p,
+                n=n,
+                status="error",
+                exception=e,
+            )
+            raise
+
+        outputs: list[dict[str, Any]] = []
+        output_tokens = 0
+        for choice in response.choices:
+            output = choice.message.content or ""
+            output_tokens += litellm.utils.token_counter(
+                text=output,
+                model=(
+                    self.custom_tokenizer.get("identifier", self.config.name)
+                    if self.custom_tokenizer is not None
+                    else self.config.name
+                ),
+                custom_tokenizer=self.custom_tokenizer,
+            )
+            output_dict: dict[str, Any] = {"message": output}
+            if self.tools.use_function_calling:
+                tool_calls = []
+                if choice.message.tool_calls:
+                    tool_calls = [call.model_dump() for call in choice.message.tool_calls]
+                output_dict["tool_calls"] = tool_calls
+            outputs.append(output_dict)
+        self._record_request(
+            provider="local_openai",
+            model_name=self.local_openai_model_path,
+            api_base=self.config.api_base,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            message_count=len(messages),
+            message_chars=message_chars,
+            tool_count=tool_count,
+            request_timeout_s=request_timeout_s,
+            duration_s=time.time() - start,
+            temperature=request_temperature,
+            top_p=request_top_p,
+            n=n,
+            status="ok",
+        )
+        return outputs, output_tokens
+
     def _single_query(
         self, messages: list[dict[str, str]], n: int | None = None, temperature: float | None = None
     ) -> list[dict]:
@@ -717,11 +1002,7 @@ class LiteLLMModel(AbstractModel):
                 del message["cache_control"]
             if "thinking_blocks" in message:
                 del message["thinking_blocks"]
-        input_tokens: int = litellm.utils.token_counter(
-            messages=messages_no_cache_control,
-            model=self.custom_tokenizer["identifier"] if self.custom_tokenizer is not None else self.config.name,
-            custom_tokenizer=self.custom_tokenizer,
-        )
+        input_tokens = self._count_request_tokens(messages_no_cache_control)
         if self.model_max_input_tokens is None:
             msg = (
                 f"No max input tokens found for model {self.config.name!r}. "
@@ -730,8 +1011,15 @@ class LiteLLMModel(AbstractModel):
             self.logger.warning(msg)
         elif input_tokens > self.model_max_input_tokens > 0:
             msg = f"Input tokens {input_tokens} exceed max tokens {self.model_max_input_tokens}"
-        
+            self.logger.warning(msg)
             raise ContextWindowExceededError(msg)
+        elif self.model_max_input_tokens > 0 and input_tokens >= int(self.model_max_input_tokens * 0.9):
+            self.logger.warning(
+                "Prompt token count is close to the configured limit: input_tokens=%s max_input_tokens=%s messages=%s",
+                input_tokens,
+                self.model_max_input_tokens,
+                len(messages_no_cache_control),
+            )
         extra_args = {}
         if self.config.api_base:
             # Not assigned a default value in litellm, so only pass this if it's set
@@ -748,14 +1036,29 @@ class LiteLLMModel(AbstractModel):
             completion_kwargs.pop('top_p')
         if 'timeout' in completion_kwargs:
             completion_kwargs.pop('timeout')
+        if self.local_openai_model_path is not None and self.config.api_base is not None:
+            outputs, output_tokens = self._query_local_openai_server(
+                messages,
+                n=n,
+                temperature=temperature,
+                input_tokens=input_tokens,
+            )
+            self._update_stats(input_tokens=input_tokens, output_tokens=output_tokens, cost=0)
+            return outputs
+        request_temperature = self.config.temperature if temperature is None else temperature
+        request_top_p = self.config.top_p
+        request_timeout_s = float(self.config.timeout)
+        request_message_chars = sum(len(json.dumps(message, ensure_ascii=False)) for message in messages)
+        request_tool_count = len(self.tools.tools) if self.tools.use_function_calling else 0
+        start = time.time()
         try:
             
             response: litellm.types.utils.ModelResponse = litellm.completion(  # type: ignore
                 model=self.config.name,
-                timeout=self.config.timeout,
+                timeout=request_timeout_s,
                 messages=messages,
-                temperature=self.config.temperature if temperature is None else temperature,
-                top_p=self.config.top_p,
+                temperature=request_temperature,
+                top_p=request_top_p,
                 api_version=self.config.api_version,
                 api_key=self.config.choose_api_key(),
                 fallbacks=self.config.fallbacks,
@@ -765,15 +1068,82 @@ class LiteLLMModel(AbstractModel):
             )
             
         except litellm.exceptions.ContextWindowExceededError as e:
-         
+            self._record_request(
+                provider="litellm",
+                model_name=self.config.name,
+                api_base=self.config.api_base,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                message_count=len(messages),
+                message_chars=request_message_chars,
+                tool_count=request_tool_count,
+                request_timeout_s=request_timeout_s,
+                duration_s=time.time() - start,
+                temperature=request_temperature,
+                top_p=request_top_p,
+                n=n,
+                status="error",
+                exception=e,
+            )
             raise ContextWindowExceededError from e
         except litellm.exceptions.ContentPolicyViolationError as e:
-          
+            self._record_request(
+                provider="litellm",
+                model_name=self.config.name,
+                api_base=self.config.api_base,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                message_count=len(messages),
+                message_chars=request_message_chars,
+                tool_count=request_tool_count,
+                request_timeout_s=request_timeout_s,
+                duration_s=time.time() - start,
+                temperature=request_temperature,
+                top_p=request_top_p,
+                n=n,
+                status="error",
+                exception=e,
+            )
             raise ContentPolicyViolationError from e
         except litellm.exceptions.BadRequestError as e:
-            
-            if "is longer than the model's context length" in str(e):
+            self._record_request(
+                provider="litellm",
+                model_name=self.config.name,
+                api_base=self.config.api_base,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                message_count=len(messages),
+                message_chars=request_message_chars,
+                tool_count=request_tool_count,
+                request_timeout_s=request_timeout_s,
+                duration_s=time.time() - start,
+                temperature=request_temperature,
+                top_p=request_top_p,
+                n=n,
+                status="error",
+                exception=e,
+            )
+            if _looks_like_context_window_error(e):
                 raise ContextWindowExceededError from e
+            raise
+        except Exception as e:
+            self._record_request(
+                provider="litellm",
+                model_name=self.config.name,
+                api_base=self.config.api_base,
+                input_tokens=input_tokens,
+                output_tokens=None,
+                message_count=len(messages),
+                message_chars=request_message_chars,
+                tool_count=request_tool_count,
+                request_timeout_s=request_timeout_s,
+                duration_s=time.time() - start,
+                temperature=request_temperature,
+                top_p=request_top_p,
+                n=n,
+                status="error",
+                exception=e,
+            )
             raise
         
         self.logger.debug(f"Response: {response}")
@@ -798,7 +1168,11 @@ class LiteLLMModel(AbstractModel):
             output = choices[i].message.content or ""
             output_tokens += litellm.utils.token_counter(
                 text=output,
-                model=self.custom_tokenizer["identifier"] if self.custom_tokenizer is not None else self.config.name,
+                model=(
+                    self.custom_tokenizer.get("identifier", self.config.name)
+                    if self.custom_tokenizer is not None
+                    else self.config.name
+                ),
                 custom_tokenizer=self.custom_tokenizer,
             )
             output_dict = {"message": output}
@@ -814,6 +1188,22 @@ class LiteLLMModel(AbstractModel):
             ):
                 output_dict["thinking_blocks"] = response.choices[i].message.thinking_blocks  # type: ignore
             outputs.append(output_dict)
+        self._record_request(
+            provider="litellm",
+            model_name=self.config.name,
+            api_base=self.config.api_base,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            message_count=len(messages),
+            message_chars=request_message_chars,
+            tool_count=request_tool_count,
+            request_timeout_s=request_timeout_s,
+            duration_s=time.time() - start,
+            temperature=request_temperature,
+            top_p=request_top_p,
+            n=n,
+            status="ok",
+        )
         self._update_stats(input_tokens=input_tokens, output_tokens=output_tokens, cost=cost)
         return outputs
 

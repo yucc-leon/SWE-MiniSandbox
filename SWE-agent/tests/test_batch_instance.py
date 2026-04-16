@@ -1,4 +1,5 @@
 import json
+import platform
 
 import pytest
 from swerex.deployment.config import DockerDeploymentConfig
@@ -13,10 +14,13 @@ def test_simple_batch_from_swe_bench_to_full_batch_instance(test_data_sources_pa
     instance = SimpleBatchInstance.from_swe_bench(sb_instance).to_full_batch_instance(
         DockerDeploymentConfig(image="python:3.11")
     )
+    expected_arch = "arm64" if platform.machine().lower() in {"aarch64", "arm64"} else "x86_64"
     assert isinstance(instance.env.repo, PreExistingRepoConfig)
     assert instance.env.repo.repo_name == "testbed"
     assert isinstance(instance.env.deployment, DockerDeploymentConfig)
-    assert instance.env.deployment.image == "docker.io/swebench/sweb.eval.x86_64.pydicom_1776_pydicom-1458:latest"
+    assert instance.env.deployment.image == (
+        f"docker.io/swebench/sweb.eval.{expected_arch}.pydicom_1776_pydicom-1458:latest"
+    )
     assert isinstance(instance.problem_statement, TextProblemStatement)
     assert instance.problem_statement.text == sb_instance["problem_statement"]
     assert instance.problem_statement.id == "pydicom__pydicom-1458"

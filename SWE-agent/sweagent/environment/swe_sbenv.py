@@ -1,6 +1,7 @@
 
 import asyncio
 import logging
+import contextlib
 from os import path
 import shlex
 from pathlib import PurePath
@@ -12,6 +13,7 @@ from swerex.deployment.config import DeploymentConfig, DockerDeploymentConfig, g
 from swerex.runtime.abstract import (
     BashAction,
     BashInterruptAction,
+    CloseBashSessionRequest,
     CreateBashSessionRequest,
     CreateSandboxBashSessionRequest,
     ReadFileRequest,
@@ -66,7 +68,7 @@ class SWEsbEnv:
         """This class represents the environment in which we solve the tasks.
 
         Attributes:
-            deployment: MiniSandbox deployment 
+            deployment: MiniSandbox deployment
             repo: Repository configuration object, or anything following the `Repo` protocol
             post_startup_commands: Commands to execute before starting the agent
             hooks: Environment hooks (used to inject custom functionality)
@@ -97,7 +99,7 @@ class SWEsbEnv:
         # Always copy config to avoid shared state between different instances
         config = config.model_copy(deep=True)
         #check class type of deployment
-        
+
         return cls(
             deployment=get_deployment_from_config(config=config.deployment,ds=ds,bundles=bundles),
             repo=config.repo,
@@ -107,7 +109,7 @@ class SWEsbEnv:
         )
 
     def add_hook(self, hook: EnvHook) -> None:
-        
+
         hook.on_init(env=self)
         self._chook.add_hook(hook)
 
@@ -127,11 +129,11 @@ class SWEsbEnv:
         Time_data['reset_deployment']=reset_data
         self._chook.on_post_init()
         post_init_time_data=self.deployment.post_init(self)
-      
+
         Time_data.update(post_init_time_data)
         return Time_data
-        
-        
+
+
         # for command in self._post_startup_commands:
         #     self.communicate(command, check="raise", timeout=self.post_startup_command_timeout)
     def _copy_repo(self):
@@ -141,7 +143,7 @@ class SWEsbEnv:
 
         self._chook.on_copy_repo_started(repo=self.repo)
         return self.repo.copy2(deployment=self.deployment,try_count=3,local_path=self.deployment.cached_git_dir)
-   
+
     def hard_reset(self):
         """Resets the environment and deployment, i.e., completely restarts the
         deployment.
@@ -159,16 +161,16 @@ class SWEsbEnv:
 
         if not self._copy_repo():
             self._reset_repository()
-        
+
         self._chook.on_environment_startup()
     def apply_test_patch(self):
         """apply test patch only"""
-      
+
         test_patch=self.deployment.ds.get('test_patch',None)
         if test_patch is not None:
             apply_patch(sandbox_root=self.deployment.root_dir,git_folder=self.deployment.git_folder,patch_str=test_patch,instance_id=self.deployment.root_dir,reverse=False)
     def pre_check(self):
-        """This funtion is used to apply a golden patch if provided and run eval scripts right after repo is copied and 
+        """This funtion is used to apply a golden patch if provided and run eval scripts right after repo is copied and
         reset and installed. (mainly used to check if the env is valid before running
         any agent steps.)
         Note that for swesmith data_type, the patch is applied reversely
@@ -190,7 +192,7 @@ class SWEsbEnv:
         # else:
         patch=self.deployment.ds.get('patch',None)
         test_patch=self.deployment.ds.get('test_patch',None)
-        
+
         if self.deployment._config.data_type=='swesmith':
             if patch is not None:
                 apply_patch(sandbox_root=self.deployment.root_dir,git_folder=self.deployment.git_folder,patch_str=patch,instance_id=self.deployment.root_dir,reverse=True)
@@ -200,12 +202,12 @@ class SWEsbEnv:
         elif self.deployment._config.data_type=='swebench':
             if patch is not None and patch !='':
                 apply_patch(sandbox_root=self.deployment.root_dir,git_folder=self.deployment.git_folder,patch_str=patch,instance_id=self.deployment.root_dir,reverse=False)
-            
+
             if test_patch is not None:
                 apply_patch(sandbox_root=self.deployment.root_dir,git_folder=self.deployment.git_folder,patch_str=test_patch,instance_id=self.deployment.root_dir,reverse=False)
             self.logger.info("Applied golden patch to repository")
         reward,f2p_dic,p2p_dic,output=self._calculate_reward(p2p=0,f2p=0)
-        print('reward',reward)
+        self.logger.debug("Pre-check reward: %s", reward)
         self._reset_repository()
         self.deployment.reset()
         return reward,f2p_dic,p2p_dic,output
@@ -216,8 +218,8 @@ class SWEsbEnv:
         #     print("Pre-check passed")
 
         # reset the repository again to remove any changes made by the eval scripts
-       
-        
+
+
     def _reset_repository(self) -> None:
         """Clean repository of any modifications + Checkout base commit"""
         if self.repo is not None:
@@ -245,8 +247,8 @@ class SWEsbEnv:
                     count+=1
                     if count==try_count:
                         raise e
-                    
-            
+
+
         # if self.deployment._config.data_type=='swesmith':
         #     patch=self.deployment.ds['patch']
         #     apply_patch(sandbox_root=self.deployment.root_dir,git_folder=self.deployment.git_folder,patch_str=patch,instance_id=self.deployment.root_dir,reverse=False)
@@ -282,28 +284,46 @@ class SWEsbEnv:
         #self._chook.on_start_deployment()
         asyncio.run(self.deployment.start())
         startup_cmd = self.deployment.startup()
-        if self.deployment._config.use_chroot:
-            asyncio.run(
-                self.deployment.runtime.create_session(
-                    CreateSandboxBashSessionRequest(startup_source=["/root/.bashrc"], startup_timeout=60,startup_cmd=startup_cmd)
-                )
-            )
-        else:
-            # No chroot: use SandboxBashSessionRequest with the plain bash startup_cmd
-            asyncio.run(
-                self.deployment.runtime.create_session(
-                    CreateSandboxBashSessionRequest(startup_source=[], startup_timeout=60,startup_cmd=startup_cmd)
-                )
-            )
+        self._create_default_session(startup_cmd)
         session_end_time = time.time()
         time_data={"session_duration": session_end_time - session_create_time,"session_start_time":session_create_time,"session_end_time":session_end_time}
-        
+
         env_setup_time = time.time()
-        self.set_env_variables({"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PIP_PROGRESS_BAR": "off", "PAGER": "cat"})
+        env_defaults = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PIP_PROGRESS_BAR": "off", "PAGER": "cat"}
+        # Under heavier no-chroot parallelism, we occasionally see the interactive
+        # shell exit immediately after create_session() but before the first command.
+        # Recreate the default session once before giving up so transient EOFs do
+        # not turn into permanent per-instance failures.
+        for attempt in range(2 if not self.deployment._config.use_chroot else 1):
+            try:
+                self.set_env_variables(env_defaults)
+                break
+            except Exception:
+                if attempt >= 1 or self.deployment._config.use_chroot:
+                    raise
+                self.logger.warning("Default shell died during env bootstrap, recreating session once")
+                self._close_default_session()
+                self._create_default_session(startup_cmd)
         env_setup_end_time = time.time()
         time_data["env_setup_duration"]=env_setup_end_time - env_setup_time
         self.logger.info("Environment Initialized")
         return time_data
+
+    def _create_default_session(self, startup_cmd: str) -> None:
+        startup_source = ["/root/.bashrc"] if self.deployment._config.use_chroot else []
+        asyncio.run(
+            self.deployment.runtime.create_session(
+                CreateSandboxBashSessionRequest(
+                    startup_source=startup_source,
+                    startup_timeout=60,
+                    startup_cmd=startup_cmd,
+                )
+            )
+        )
+
+    def _close_default_session(self) -> None:
+        with contextlib.suppress(Exception):
+            asyncio.run(self.deployment.runtime.close_session(CloseBashSessionRequest()))
     def interrupt_session(self):
         self.logger.info("Interrupting session")
         asyncio.run(self.deployment.runtime.run_in_session(BashInterruptAction()))
@@ -330,13 +350,17 @@ class SWEsbEnv:
         Returns:
             output: output from gym environment
         """
+        root_dir = self.deployment._config.root_dir.rstrip("/")
+        if root_dir not in input:
+            input = self.deployment._rewrite_script_paths(input)
         self.logger.log(logging.TRACE, "Input:\n%s", input)  # type: ignore
         rex_check = "silent" if check else "ignore"
         r = asyncio.run(
             self.deployment.runtime.run_in_session(BashAction(command=input, timeout=timeout, check=rex_check))
         )
         output ='\n'.join(r.output.split('\n')[:-1])
-        
+        output = self.deployment.rewrite_observation_paths(output)
+
         self.logger.log(logging.TRACE, "Output:\n%s", output)  # type: ignore
         if check != "ignore" and r.exit_code != 0:
             self.logger.error(f"{error_msg}:\n{output}")
@@ -351,17 +375,15 @@ class SWEsbEnv:
         self.deployment.get_patch(dir)
 
     def read_file(self, path: str | PurePath, encoding: str | None = None, errors: str | None = None) -> str:
-        
-        root_dir=self.deployment._config.root_dir
-        tg_path=root_dir+str(path)
+        tg_path = self.deployment.sandbox_path(str(path))
         r = asyncio.run(
             self.deployment.runtime.read_file(ReadFileRequest(path=str(tg_path), encoding=encoding, errors=errors))
         )
         return r.content
 
     def write_file(self, path: str | PurePath, content: str) -> None:
-        
-        asyncio.run(self.deployment.runtime.write_file(WriteFileRequest(path=str(path), content=content)))
+        tg_path = self.deployment.sandbox_path(str(path))
+        asyncio.run(self.deployment.runtime.write_file(WriteFileRequest(path=str(tg_path), content=content)))
 
     def set_env_variables(self, env_variables: dict[str, str]) -> None:
         """Set environment variables in the environment."""
@@ -385,7 +407,7 @@ class SWEsbEnv:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
-       
+
         asyncio.run(
             self.deployment.runtime.execute(RexCommand(command=command, shell=shell, check=check, env=env, cwd=cwd))
         )

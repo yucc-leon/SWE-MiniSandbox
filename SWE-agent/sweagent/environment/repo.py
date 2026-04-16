@@ -1,5 +1,9 @@
 import asyncio
 import os
+import shutil
+import subprocess
+import tempfile
+import tarfile
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -16,6 +20,12 @@ from sweagent.utils.log import get_logger
 logger = get_logger("swea-config", emoji="🔧")
 
 from swesandbox.utils import copytree_via_tar,tar_extract
+
+
+def _cache_repo_dir_from_archive(archive_path: str) -> str:
+    archive = Path(archive_path)
+    stem = archive.name[:-4] if archive.name.endswith(".tar") else archive.stem
+    return str(archive.with_name(f"{stem}.repo"))
 
 class Repo(Protocol):
     """Protocol for repository configurations."""
@@ -209,7 +219,7 @@ class GithubRepoRetryConfig(BaseModel):
     SWE-agent will then start from this commit when trying to solve the problem.
     """
 
-    clone_timeout: float = 60
+    clone_timeout: float = 180
     """Timeout for git clone operation."""
 
     type: Literal["github"] = "github"
@@ -279,24 +289,47 @@ class GithubRepoRetryConfig(BaseModel):
         current_file = os.path.abspath(__file__)
         current_dir = os.path.dirname(current_file)
         zip_dir = os.path.abspath(os.path.join(current_dir, "../../../zip"))
-        
+
+        if (
+            local_path is not None
+            and not os.path.exists(local_path)
+            and deployment._config.cache_git
+            and not deployment._config.force_rebuild
+        ):
+            try:
+                self._prefetch_repo_archive(local_path)
+            except Exception as e:
+                logger.warning(f"Outer cache prefetch failed for {self.repo_name}@{self.base_commit[:12]}: {e}")
+
         # if local_path exist
         if deployment._config.force_rebuild:
             if local_path is not None and os.path.exists(local_path):
                 os.remove(local_path)
         if local_path is not None and os.path.exists(local_path):
-            #directly copy to deployment.root_dir/deployment.git_folder
-            
-       
-            tar_extract(local_path,os.path.join(deployment.root_dir,self.git_folder),threads=2)
+            target_repo_dir = os.path.join(deployment.root_dir, self.git_folder)
+            if not deployment._config.use_chroot:
+                try:
+                    cache_repo_dir = self._ensure_local_repo_cache(local_path)
+                    self._clone_from_local_cache(cache_repo_dir, target_repo_dir)
+                except Exception as e:
+                    logger.warning(
+                        "Local shared clone fallback failed for %s@%s, falling back to tar extract: %s",
+                        self.repo_name,
+                        self.base_commit[:12],
+                        e,
+                    )
+                    tar_extract(local_path, target_repo_dir, threads=2)
+            else:
+                #directly copy to deployment.root_dir/deployment.git_folder
+                tar_extract(local_path, target_repo_dir, threads=2)
             if deployment.ds['repo']=='matplotlib/matplotlib':
                 # cp /home/zeta/SWE/SWE/zip/freetype-2.6.1.tar.gz to sandbox /testbed/build
-               
+
                 deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",deployment.sandbox_path('/testbed/build'))
                 deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",deployment.sandbox_path('/testbed/build'))
             return True
 
-        
+
         base_commit = self.base_commit
         github_token = os.getenv("GITHUB_TOKEN", "")
         url = self._get_url_with_token(github_token)
@@ -306,7 +339,7 @@ class GithubRepoRetryConfig(BaseModel):
                     BashAction(
                         command=" && ".join(
                             (
-                                
+
                                 f"mkdir -p {git_dir}" ,
                                 f"cd {git_dir}",
                                 "git init",
@@ -327,7 +360,7 @@ class GithubRepoRetryConfig(BaseModel):
                         BashAction(
                             command=" && ".join(
                                 (
-                                   
+
                                     f"git fetch --depth 1 origin {base_commit}",
                                     "git checkout FETCH_HEAD",
                                     "cd ..",
@@ -340,18 +373,178 @@ class GithubRepoRetryConfig(BaseModel):
                 )
                 break
             except Exception as e:
-                print("Retry copy repo")
-                count+=1
-                if count==try_count:
-                    raise e
-                logger.warning(f"Git clone failed, retrying {count}/{try_count}...")
+                logger.warning(f"Shallow git fetch failed for {base_commit[:12]}, trying partial full-ref fetch...")
+                try:
+                    asyncio.run(
+                        deployment.runtime.run_in_session(
+                            BashAction(
+                                command=" && ".join(
+                                    (
+                                        "git fetch --filter=tree:0 --no-tags origin '+refs/heads/*:refs/remotes/origin/*'",
+                                        f"git checkout {base_commit}",
+                                        "cd ..",
+                                    )
+                                ),
+                                timeout=self.clone_timeout,
+                                check='raise',
+                            )
+                        ),
+                    )
+                    break
+                except Exception:
+                    logger.warning(
+                        f"Head-ref fetch failed for {base_commit[:12]}, trying exact ref lookup via git ls-remote..."
+                    )
+                    try:
+                        asyncio.run(
+                            deployment.runtime.run_in_session(
+                                BashAction(
+                                    command=" && ".join(
+                                        (
+                                            f"""ref=$(git ls-remote --refs origin 'refs/heads/*' 'refs/tags/*' 'refs/pull/*/head' 'refs/pull/*/merge' | grep '^{base_commit}[[:space:]]' | head -n1 | cut -f2)""",
+                                            """test -n "$ref" """,
+                                            """printf 'Resolved hidden ref: %s\n' "$ref" """,
+                                            """git fetch --depth 1 origin "$ref" """,
+                                            """git checkout -q FETCH_HEAD""",
+                                            "cd ..",
+                                        )
+                                    ),
+                                    timeout=self.clone_timeout,
+                                    check='raise',
+                                )
+                            ),
+                        )
+                        break
+                    except Exception:
+                        count+=1
+                        if count==try_count:
+                            raise e
+                        logger.warning(f"Git clone failed, retrying {count}/{try_count}...")
         if deployment.ds['repo']=='matplotlib/matplotlib':
             # cp /home/zeta/SWE/SWE/zip/freetype-2.6.1.tar.gz to sandbox /testbed/build
             deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",deployment.sandbox_path('/testbed/build'))
             deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",deployment.sandbox_path('/testbed/build'))
         return False
+
+    def _run_local_git(self, cwd: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=self.clone_timeout,
+            check=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+    def _prefetch_repo_archive(self, archive_path: str) -> None:
+        github_token = os.getenv("GITHUB_TOKEN", "")
+        url = self._get_url_with_token(github_token)
+        base_commit = self.base_commit
+        os.makedirs(os.path.dirname(archive_path), exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="swe_gitprefetch_") as tmpdir:
+            repo_dir = os.path.join(tmpdir, self.git_folder)
+            os.makedirs(repo_dir, exist_ok=True)
+            self._run_local_git(repo_dir, "init", "-q")
+            self._run_local_git(repo_dir, "remote", "add", "origin", url)
+            checked_out = False
+            try:
+                self._run_local_git(repo_dir, "fetch", "--depth", "1", "origin", base_commit)
+            except Exception:
+                try:
+                    self._run_local_git(
+                        repo_dir,
+                        "fetch",
+                        "--filter=tree:0",
+                        "--no-tags",
+                        "origin",
+                        "+refs/heads/*:refs/remotes/origin/*",
+                    )
+                    self._run_local_git(repo_dir, "checkout", base_commit)
+                    checked_out = True
+                except Exception:
+                    ref = self._resolve_hidden_ref(url, base_commit)
+                    if not ref:
+                        raise RuntimeError(f"unable to resolve hidden ref for {base_commit}")
+                    self._run_local_git(repo_dir, "fetch", "--depth", "1", "origin", ref)
+            if not checked_out:
+                self._run_local_git(repo_dir, "checkout", "-q", "FETCH_HEAD")
+            with tarfile.open(archive_path, "w") as tar:
+                for entry in os.listdir(repo_dir):
+                    tar.add(os.path.join(repo_dir, entry), arcname=entry)
+
+    def _ensure_local_repo_cache(self, archive_path: str) -> str:
+        cache_repo_dir = _cache_repo_dir_from_archive(archive_path)
+        git_dir = os.path.join(cache_repo_dir, ".git")
+        if os.path.isdir(git_dir):
+            return cache_repo_dir
+        if os.path.exists(cache_repo_dir):
+            shutil.rmtree(cache_repo_dir, ignore_errors=True)
+        os.makedirs(cache_repo_dir, exist_ok=True)
+        tar_extract(archive_path, cache_repo_dir, threads=2)
+        if not os.path.isdir(git_dir):
+            raise RuntimeError(f"archive {archive_path} did not extract into a git repo cache")
+        return cache_repo_dir
+
+    def _clone_from_local_cache(self, source_repo_dir: str, target_repo_dir: str) -> None:
+        target_path = Path(target_repo_dir)
+        local_timeout = max(self.clone_timeout, 300)
+        if target_path.exists():
+            shutil.rmtree(target_path, ignore_errors=True)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--local",
+                "--shared",
+                "--no-checkout",
+                source_repo_dir,
+                target_repo_dir,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=local_timeout,
+            check=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        subprocess.run(
+            ["git", "checkout", "-q", self.base_commit],
+            cwd=target_repo_dir,
+            text=True,
+            capture_output=True,
+            timeout=local_timeout,
+            check=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        self._run_local_git(target_repo_dir, "clean", "-fdq")
+
+    def _resolve_hidden_ref(self, url: str, commit: str) -> str:
+        out = subprocess.run(
+            [
+                "git",
+                "ls-remote",
+                "--refs",
+                url,
+                "refs/heads/*",
+                "refs/tags/*",
+                "refs/pull/*/head",
+                "refs/pull/*/merge",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=self.clone_timeout,
+            check=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        ).stdout
+        for line in out.splitlines():
+            sha, _, ref = line.partition("\t")
+            if sha == commit and ref:
+                logger.warning(f"Resolved hidden ref for {commit[:12]} -> {ref}")
+                return ref
+        return ""
     def get_reset_commands(self) -> list[str]:
-        
+
         return _get_git_reset_commands(self.base_commit)
 
 

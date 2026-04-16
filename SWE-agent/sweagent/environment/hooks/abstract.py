@@ -41,6 +41,14 @@ class EnvHook:
         """Called when getting environment script"""
     def on_getting_eval(self):
         """Called when getting evaluation script"""
+    def on_creating_shared_venv(self):
+        """Called when creating a fresh shared virtual environment"""
+    def on_installing_repo_env(self):
+        """Called when installing repository/environment dependencies"""
+    def on_packing_shared_venv(self):
+        """Called when packing the shared virtual environment cache"""
+    def on_caching_git_repo(self):
+        """Called when caching the repository snapshot"""
     
     
 
@@ -98,3 +106,15 @@ class CombinedEnvHooks(EnvHook):
     def on_copying_shared_venv(self):
         for hook in self._hooks:
             hook.on_copying_shared_venv()
+    def on_creating_shared_venv(self):
+        for hook in self._hooks:
+            hook.on_creating_shared_venv()
+    def on_installing_repo_env(self):
+        for hook in self._hooks:
+            hook.on_installing_repo_env()
+    def on_packing_shared_venv(self):
+        for hook in self._hooks:
+            hook.on_packing_shared_venv()
+    def on_caching_git_repo(self):
+        for hook in self._hooks:
+            hook.on_caching_git_repo()

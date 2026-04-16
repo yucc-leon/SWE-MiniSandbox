@@ -7,19 +7,31 @@ from pathlib import Path
 from registry import registry  # type: ignore
 
 
+def _load_state(state_path: Path) -> dict:
+    if not state_path.exists():
+        return {}
+    try:
+        state = json.loads(state_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _write_state(state_path: Path, state: dict) -> None:
+    tmp_path = state_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(state))
+    tmp_path.replace(state_path)
+
+
 def main():
     state_path = Path("/root/state.json")
-
-    if state_path.exists():
-        state = json.loads(state_path.read_text())
-    else:
-        state = {}
+    state = _load_state(state_path)
 
     current_file = registry.get("CURRENT_FILE")
     open_file = "n/a" if not current_file else str(Path(current_file).resolve())
     state["open_file"] = open_file
     state["working_dir"] = os.getcwd()
-    state_path.write_text(json.dumps(state))
+    _write_state(state_path, state)
 
 if __name__ == "__main__":
     main()

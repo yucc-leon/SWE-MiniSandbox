@@ -96,6 +96,7 @@ class EmptyAgent(AbstractAgent):
     def __init__(
         self,
         *,
+        pre_check: bool = True,
         templates: TemplateConfig,
         tools: ToolHandler,
         history_processors: list[HistoryProcessor],
@@ -111,6 +112,7 @@ class EmptyAgent(AbstractAgent):
         self._always_require_zero_exit_code = _always_require_zero_exit_code
         self.name = name
         self.model = model
+        self.pre_check = pre_check
         self.templates = templates
         self.tools = tools
         if isinstance(self.model, HumanThoughtModel):
@@ -154,6 +156,7 @@ class EmptyAgent(AbstractAgent):
         config = config.model_copy(deep=True)
         model = get_model(config.model, config.tools)
         return cls(
+            pre_check=config.pre_check,
             templates=config.templates,
             tools=ToolHandler(config.tools),
             history_processors=config.history_processors,
@@ -218,7 +221,6 @@ class EmptyAgent(AbstractAgent):
 
         This method is called by `self.run`.
         """
-        print('setup')
         output_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -944,7 +946,15 @@ class EmptyAgent(AbstractAgent):
             output_dir: directory to save the trajectory and other outputs
         """
         env._chook.on_start_deployment()
-        self.process_precheck(*env.pre_check())
+        if self.pre_check:
+            self.process_precheck(*env.pre_check())
+        else:
+            self.info = AgentInfo()
+            self.info["reward"] = 1
+            self.info["test_out"] = ""
+            self.info["p2p"] = {}
+            self.info["f2p"] = {}
+            self.info["exit_status"] = "passed"
         env._chook.on_pre_check_finish()
         self.setup(env=env, problem_statement=problem_statement, output_dir=output_dir)
 

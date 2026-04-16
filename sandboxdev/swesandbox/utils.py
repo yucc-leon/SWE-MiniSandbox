@@ -3,7 +3,10 @@ import threading
 import os
 import tarfile
 import tempfile
-import ray
+try:
+    import ray
+except ModuleNotFoundError:
+    ray = None
 import os
 import math
 import os
@@ -19,26 +22,27 @@ def get_tar_io_for_file(path: str) -> float:
     resource_name = "tar_io"
     this_ip = socket.gethostbyname(socket.gethostname())
     io_max=40
-    for node in ray.nodes():
-        # if node["Alive"] and node["NodeManagerAddress"] == this_ip:
-        io_max = node["Resources"].get(resource_name,40)
-    return min(max(1, math.ceil(size_mb / io_seperation_mb)),io_max)  # 最少 1 个 io 单位     
+    if ray is not None:
+        for node in ray.nodes():
+            # if node["Alive"] and node["NodeManagerAddress"] == this_ip:
+            io_max = node["Resources"].get(resource_name,40)
+    return min(max(1, math.ceil(size_mb / io_seperation_mb)),io_max)  # 最少 1 个 io 单位
 
 
 def tar_extract(tar_path, dst, threads: int = 4, ):
     """
     Unpack tar file to destination directory dst. We implement both local and remote (Ray) versions of I/O bounded logic.
-    
+
     Attributes:
         tar_path: Path to the tar file.
         dst: Destination directory to extract files into.
         threads: Number of threads to use for extraction (not used in this implementation).
     """
-    remote = ray.is_initialized()
+    remote = ray is not None and ray.is_initialized()
     if remote:
         ref = tar_extract_remote(tar_path, dst)  # 立即返回一个 ObjectRef
-        ray.get(ref) 
-        
+        ray.get(ref)
+
     else:
         tar_extract_local(tar_path, dst)
 # def copytree_via_tar(src, dst, *, dirs_exist_ok=False, threads: int = 2):
@@ -65,38 +69,47 @@ def extract(tar_path, dst, threads: int = 4):
         """
         解压 tar 文件到目标目录 dst。
         """
-    
+
         os.makedirs(dst, exist_ok=True)
         with tarfile.open(tar_path, "r") as tar:
             tar.extractall(path=dst)
 # less than 10MB
-@ray.remote(resources={"tar_io": float(10)/io_seperation_mb})
-def extract_remote_10MB(tar_path, dst):
-    extract(tar_path, dst)
-# between 10MB and 50MB
-@ray.remote(resources={"tar_io": float(50)/io_seperation_mb})
-def extract_remote_50MB(tar_path, dst):
-    extract(tar_path, dst)
-# between 50MB and 100MB
-@ray.remote(resources={"tar_io": float(100)/io_seperation_mb})
-def extract_remote_100MB(tar_path, dst):
-    extract(tar_path, dst)
-# between 100MB and 200MB
-@ray.remote(resources={"tar_io": float(200)/io_seperation_mb})
-def extract_remote_200MB(tar_path, dst):
-    extract(tar_path, dst)
-# more than 200MB
-@ray.remote(resources={"tar_io": float(500)/io_seperation_mb})
-def extract_remote_large(tar_path, dst):
-    extract(tar_path, dst)
+if ray is not None:
+    @ray.remote(resources={"tar_io": float(10)/io_seperation_mb})
+    def extract_remote_10MB(tar_path, dst):
+        extract(tar_path, dst)
+
+    @ray.remote(resources={"tar_io": float(50)/io_seperation_mb})
+    def extract_remote_50MB(tar_path, dst):
+        extract(tar_path, dst)
+
+    @ray.remote(resources={"tar_io": float(100)/io_seperation_mb})
+    def extract_remote_100MB(tar_path, dst):
+        extract(tar_path, dst)
+
+    @ray.remote(resources={"tar_io": float(200)/io_seperation_mb})
+    def extract_remote_200MB(tar_path, dst):
+        extract(tar_path, dst)
+
+    @ray.remote(resources={"tar_io": float(500)/io_seperation_mb})
+    def extract_remote_large(tar_path, dst):
+        extract(tar_path, dst)
+else:
+    extract_remote_10MB = None
+    extract_remote_50MB = None
+    extract_remote_100MB = None
+    extract_remote_200MB = None
+    extract_remote_large = None
 
 def make_extract_remote(tar_io_need: float):
+   if ray is None:
+       raise RuntimeError("ray is not installed")
    @ray.remote(resources={"tar_io": tar_io_need})
    def extract(tar_path, dst, threads: int = 4):
         """
         解压 tar 文件到目标目录 dst。
         """
-    
+
         os.makedirs(dst, exist_ok=True)
         with tarfile.open(tar_path, "r") as tar:
             tar.extractall(path=dst)
@@ -117,7 +130,7 @@ def tar_extract_remote(tar_path, dst):
     """
     解压 tar 文件到目标目录 dst。
     """
-   
+
     tar_io_need = get_tar_io_for_file(tar_path)
     extract = make_extract_remote(tar_io_need)
     return extract.remote(tar_path, dst)
@@ -218,7 +231,7 @@ def copytree_via_tar(src, dst, *, dirs_exist_ok=False, cached=True):
             - False: 目标目录不能存在，否则抛 FileExistsError
             - True: 允许目标已存在，在其中解压内容（可能覆盖/合并）
     """
-    
+
     src = os.fspath(src)
     dst = os.fspath(dst)
 
@@ -235,19 +248,27 @@ def copytree_via_tar(src, dst, *, dirs_exist_ok=False, cached=True):
         os.makedirs(dst, exist_ok=True)
 
     # 创建临时 tar 文件
-    tar_name =src.replace("/","_")
-    tar_path = f"/tmp/copytree_via_tar/{tar_name}.tar"
-    if cached and os.path.exists(tar_path):
-        if ray.is_initialized():
-            ref = tar_extract_remote(tar_path, dst)
+    tar_name = src.replace("/", "_")
+    cached_tar_path = f"/tmp/copytree_via_tar/{tar_name}.tar"
+    tar_path = cached_tar_path
+    if cached and os.path.exists(cached_tar_path):
+        if ray is not None and ray.is_initialized():
+            ref = tar_extract_remote(cached_tar_path, dst)
             ray.get(ref)
         else:
-            tar_extract_local(tar_path, dst)
-        return 
+            tar_extract_local(cached_tar_path, dst)
+        return
     else:
-        # create tmp dir and file
-        os.makedirs(os.path.dirname(tar_path), exist_ok=True)
-        open(tar_path, "w").close()
+        os.makedirs("/tmp/copytree_via_tar", exist_ok=True)
+        if cached:
+            open(cached_tar_path, "w").close()
+        else:
+            fd, tar_path = tempfile.mkstemp(
+                prefix=f"{tar_name}_",
+                suffix=".tar",
+                dir="/tmp/copytree_via_tar",
+            )
+            os.close(fd)
 
     try:
         # 打包 src 目录

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import platform
+import re
 
 from dataclasses import dataclass
 from typing import Any, Optional, Union, cast
@@ -24,6 +25,23 @@ from .create_scripts import (
     make_env_script_list,
     make_eval_script_list,
 )
+
+
+def _normalize_swebench_arch(raw_arch: str | None = None) -> str:
+    arch = (raw_arch or platform.machine()).lower()
+    if arch in {"x86_64", "amd64"}:
+        return "x86_64"
+    if arch in {"aarch64", "arm64"}:
+        return "arm64"
+    return arch
+
+
+def _rewrite_swebench_image_arch(image_name: str, target_arch: str) -> str:
+    return re.sub(
+        r"(sweb\.(?:eval|env|base)\.)(x86_64|arm64)(\.)",
+        rf"\1{target_arch}\3",
+        image_name,
+    )
 
 
 @dataclass
@@ -191,7 +209,7 @@ def make_test_spec(
     base_image_tag: str = LATEST,
     env_image_tag: str = LATEST,
     instance_image_tag: str = LATEST,
-    arch: str = "x86_64",
+    arch: str | None = None,
     env_path:str ="./env",
     env=None
 ) -> TestSpec:
@@ -219,6 +237,11 @@ def make_test_spec(
 
     pass_to_pass = _from_json_or_obj("PASS_TO_PASS")
     fail_to_pass = _from_json_or_obj("FAIL_TO_PASS")
+
+    arch = _normalize_swebench_arch(arch)
+
+    if "image_name" in instance and instance["image_name"]:
+        instance["image_name"] = _rewrite_swebench_image_arch(str(instance["image_name"]), arch)
 
     env_name = "testbed"
     repo_directory = f"/{env_name}"

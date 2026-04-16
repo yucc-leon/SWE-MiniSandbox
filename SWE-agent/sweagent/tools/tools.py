@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from swerex.runtime.abstract import Command as RexCommand
 from swerex.runtime.abstract import UploadRequest
 from typing_extensions import Self
 
- 
+
 from sweagent.tools.bundle import Bundle
 from sweagent.tools.commands import BASH_COMMAND, Command
 from sweagent.tools.parsing import FunctionCallingParser, JsonParser, ParseFunction
@@ -70,6 +71,9 @@ class ToolFilterConfig(BaseModel):
         "r2": r"\b(?:radare2)\b.*\s+-c\s+.*",
     }
     """Block any command that matches one of these names unless it also matches the regex"""
+
+    enable_repo_scan_guard: bool = False
+    """When enabled, block repo-wide scans that tend to explode context on SWE-style repos."""
 
 
 class ToolConfig(BaseModel):
@@ -201,7 +205,7 @@ class ToolConfig(BaseModel):
         multi_line_command_endings = {
             command.name: command.end_name for command in commands if command.end_name is not None
         }
-        
+
 
         # assert not self.enable_bash_tool and parse_function is FunctionCallingParser or JsonParser
         if not self.enable_bash_tool and not (
@@ -253,6 +257,48 @@ class ToolHandler:
         self._install_commands(env)
         self.reset(env)
 
+    def _tool_root(self, env) -> str:
+        """Return the logical tool root exposed by the deployment.
+
+        Sandbox deployments expose tools under ``abs_tool_path`` (for example
+        ``/tools``). Docker-style environments historically used ``/root/tools``.
+        Keep the old path as a fallback so non-sandbox deployments continue to
+        work unchanged.
+        """
+        return getattr(env.deployment, "abs_tool_path", "/root/tools").rstrip("/")
+
+    def _bundle_root(self, env, bundle_name: str) -> str:
+        tool_root = self._tool_root(env)
+        bundle_path = f"{tool_root}/{bundle_name}"
+        if hasattr(env.deployment, "sandbox_path"):
+            return env.deployment.sandbox_path(bundle_path)
+        return bundle_path
+
+    async def _bundle_exists(self, env, bundle_root: str) -> bool:
+        try:
+            await env.deployment.runtime.execute(
+                RexCommand(
+                    command=f"test -e {shlex.quote(bundle_root)}",
+                    shell=True,
+                    check=True,
+                )
+            )
+        except Exception:
+            return False
+        return True
+
+    async def _upload_bundle_if_needed(self, env, bundle) -> None:
+        target_path = self._bundle_root(env, bundle.path.name)
+        if await self._bundle_exists(env, target_path):
+            self.logger.debug("Tool bundle already present at %s, skipping upload", target_path)
+            return
+        await env.deployment.runtime.upload(
+            UploadRequest(
+                source_path=bundle.path.as_posix(),
+                target_path=target_path,
+            )
+        )
+
     def reset(self, env) -> None:
         self.logger.info("Resetting tools")
         env_variables = self.config.env_variables.copy() | {
@@ -265,29 +311,27 @@ class ToolHandler:
 
     async def _upload_bundles(self, env) -> None:
         await asyncio.gather(
-            *(
-                env.deployment.runtime.upload(
-                    UploadRequest(source_path=bundle.path.as_posix(), target_path=f"/root/tools/{bundle.path.name}")
+            *(self._upload_bundle_if_needed(env, bundle) for bundle in self.config.bundles)
+        )
+
+    def _check_available_commands(self, env, env_vars: dict[str, str]) -> None:
+        env_exports = " && ".join(
+            f"export {key}={shlex.quote(str(value))}" for key, value in env_vars.items() if value is not None
+        )
+        for command in self.config.commands:
+            if command.name == "bash":
+                continue
+            probe = " && ".join(filter(None, [env_exports, f"which {shlex.quote(command.name)}"]))
+            try:
+                env.communicate(
+                    probe,
+                    check="raise",
+                    timeout=self.config.install_timeout,
+                    error_msg=f"Tool {command.name} is not available in the container.",
                 )
-                for bundle in self.config.bundles
-            )
-        )
-
-    async def _is_command_available(self, env, command: str, env_vars: dict[str, str]) -> None:
-        if command == "bash":
-            return
-        try:
-            await env.deployment.runtime.execute(
-                RexCommand(command=f"which {command}", shell=True, check=True, env=env_vars)
-            )
-        except Exception:
-            msg = f"Tool {command} is not available in the container."
-            raise RuntimeError(msg) from None
-
-    async def _check_available_commands(self, env, env_vars: dict[str, str]) -> None:
-        await asyncio.gather(
-            *(self._is_command_available(env, command.name, env_vars) for command in self.config.commands)
-        )
+            except Exception:
+                msg = f"Tool {command.name} is not available in the container."
+                raise RuntimeError(msg) from None
 
     def _install_commands(self, env) -> None:
         """Make sure all commands are available in the container"""
@@ -295,13 +339,14 @@ class ToolHandler:
         cwd = env.communicate("pwd", check="raise").strip()
         asyncio.run(self._upload_bundles(env))
         for bundle in self.config.bundles:
+            bundle_root = self._bundle_root(env, bundle.path.name)
             cmds = [
-                f"export PATH=/root/tools/{bundle.path.name}/bin:$PATH",
-                f"chmod +x /root/tools/{bundle.path.name}/bin/*",
+                f"export PATH={bundle_root}/bin:$PATH",
+                f"chmod +x {bundle_root}/bin/*",
             ]
             if (bundle.path / "install.sh").exists():
-                cmds.append(f"cd /root/tools/{bundle.path.name} && source install.sh")
-            cmds.append(f"chmod +x /root/tools/{bundle.path.name}/bin/*")
+                cmds.append(f"cd {bundle_root} && source install.sh")
+            cmds.append(f"chmod +x {bundle_root}/bin/*")
             env.communicate(
                 " && ".join(cmds),
                 check="raise",
@@ -309,7 +354,7 @@ class ToolHandler:
             )
         env.communicate(f"cd {cwd}", check="raise")
         path = env.communicate("echo $PATH", check="raise").strip()
-        asyncio.run(self._check_available_commands(env, {"PATH": path}))
+        self._check_available_commands(env, {"PATH": path})
 
     # Getting state
     # -------------
@@ -327,8 +372,8 @@ class ToolHandler:
         try:
             state = json.loads(state_str)
         except json.JSONDecodeError as e:
-            msg = f"State {state_str!r} is not valid json. This is an internal error, please report it."
-            raise ValueError(msg) from e
+            self.logger.warning("State file contains invalid json, returning empty state")
+            return {}
         if not isinstance(state, dict):
             msg = f"State commands must return a dictionary. Got {state!r} instead."
             raise ValueError(msg)
@@ -350,11 +395,40 @@ class ToolHandler:
     # Blocking
     # --------
 
+    @staticmethod
+    def _is_repo_wide_scan(action: str) -> bool:
+        """Detect commands that enumerate the entire repository and usually explode context.
+
+        These commands are especially harmful on SWE-bench style repos because the resulting
+        file list is huge and tends to dominate the next prompt, leading to immediate
+        ``exit_context`` failures before the agent reads any relevant code.
+        """
+        action = action.strip()
+        has_output_cap = bool(re.search(r"""\|\s*(?:head|tail)\b""", action))
+        if re.search(r"""^\s*find\s+/testbed(?:/\S+)?\s+-type\s+d\b""", action):
+            # Pure directory walks still explode context, but targeted directory-name lookups
+            # like `find /testbed -type d -name "model_fields"` are usually small enough.
+            if not has_output_cap and not re.search(r"""\s-(?:name|iname|path|ipath|regex)\b""", action):
+                return True
+        if re.search(r"""^\s*ls\s+-R\s+/testbed\b""", action):
+            return True
+        if re.search(r"""^\s*find\s+/testbed\s+-type\s+f\b.*\|\s*sort\b""", action):
+            # Sorting a full-repo file walk still requires enumerating the whole tree before
+            # any cap can apply, so keep this blocked.
+            return True
+        if re.search(r"""^\s*find\s+/testbed\s+-type\s+f\b.*\|\s*(?:grep|xargs)\b""", action):
+            return not has_output_cap
+        if re.search(r"""^\s*find\s+/testbed\s+-type\s+f\b.*-name\s+['"]?\*\.py['"]?""", action):
+            return True
+        return False
+
     def should_block_action(self, action: str) -> bool:
         """Check if the command should be blocked."""
         action = action.strip()
         if not action:
             return False
+        if self.config.filter.enable_repo_scan_guard and self._is_repo_wide_scan(action):
+            return True
         if any(f.startswith(action) for f in self.config.filter.blocklist):
             return True
         if action in self.config.filter.blocklist_standalone:
