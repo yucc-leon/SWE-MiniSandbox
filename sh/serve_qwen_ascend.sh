@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 MINIFORGE_ROOT=${MINIFORGE_ROOT:-/sharedata/liyuchen/miniforge3}
 VLLM_ENV_NAME=${VLLM_ENV_NAME:-vllm-ascend-cann8.3-v011-clean}
 MODEL_PATH=${MODEL_PATH:-/sharedata/liyuchen/models/Qwen3-4B-Instruct-2507}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-${MODEL_NAME:-}}
 HOST=${HOST:-0.0.0.0}
 PORT=${PORT:-8001}
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
@@ -111,6 +112,9 @@ then
 fi
 
 echo "Serving model from ${MODEL_PATH}"
+if [[ -n "${SERVED_MODEL_NAME}" ]]; then
+  echo "Served model name: ${SERVED_MODEL_NAME}"
+fi
 echo "Endpoint: http://${HOST}:${PORT}/v1"
 echo "Env: ${VLLM_ENV_NAME}"
 echo "Ascend toolkit env: ${ASCEND_TOOLKIT_ENV}"
@@ -140,6 +144,9 @@ if [[ "${ENABLE_AUTO_TOOL_CHOICE}" == "1" ]]; then
 fi
 if [[ -n "${TOOL_CALL_PARSER}" ]]; then
   EXTRA_ARGS+=(--tool-call-parser "${TOOL_CALL_PARSER}")
+fi
+if [[ -n "${SERVED_MODEL_NAME}" ]]; then
+  EXTRA_ARGS+=(--served-model-name "${SERVED_MODEL_NAME}")
 fi
 
 exec vllm serve "${MODEL_PATH}" \

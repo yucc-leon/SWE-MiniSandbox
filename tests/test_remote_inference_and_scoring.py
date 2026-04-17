@@ -121,6 +121,13 @@ def test_remote_inference_render_supports_served_model_name(tmp_path):
     assert '--served-model-name "${SERVED_MODEL_NAME}"' in script_text
 
 
+def test_local_ascend_serve_script_supports_served_model_name():
+    script_text = (ROOT / "sh/serve_qwen_ascend.sh").read_text(encoding="utf-8")
+
+    assert "SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-${MODEL_NAME:-}}" in script_text
+    assert 'EXTRA_ARGS+=(--served-model-name "${SERVED_MODEL_NAME}")' in script_text
+
+
 def test_remote_inference_doctor_accepts_consistent_runtime(tmp_path):
     mod = _load_module("run_remote_inference_task", "sh/run_remote_inference_task.py")
 
