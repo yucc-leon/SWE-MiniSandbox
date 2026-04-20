@@ -48,6 +48,7 @@ nav:
         - Ascend Recovery Guide: guide/ascend-recovery.md
         - Evaluation Modes: guide/eval-modes.md
         - Current Evaluation Stack: guide/current-eval-stack.md
+        - Current Baseline: guide/current-baseline.md
         - Task-Submitted Inference Mode: guide/inference-task-mode.md
         - SkyRL Ascend Adaptation: guide/skyrl-ascend-adaptation-guide.md
         - API Reference:
