@@ -169,15 +169,15 @@ Official SWE-bench Verified score: 12.2%.
 下一轮精度对齐优先下载并测试同家族模型：
 
 - Hugging Face repo: `SWE-bench/SWE-agent-LM-32B`
-- local path: `/sharedata/liyuchen/models/SWE-agent-LM-32B`
-- served model name: `sweagent-lm-32b`
+- local path: `/sharedata/liyuchen/models/sweagent-32b`
+- served model name: `sweagent-32b`
 
 下载完成后，远端 server 侧建议启动为：
 
 ```bash
-export MODEL_PATH=/sharedata/liyuchen/models/SWE-agent-LM-32B
-export MODEL_NAME=sweagent-lm-32b
-export SERVED_MODEL_NAME=sweagent-lm-32b
+export MODEL_PATH=/sharedata/liyuchen/models/sweagent-32b
+export MODEL_NAME=sweagent-32b
+export SERVED_MODEL_NAME=sweagent-32b
 export MAX_MODEL_LEN=32768
 export PORT=8001
 
@@ -189,14 +189,14 @@ bash sh/serve_qwen_ascend.sh
 
 ```bash
 API_BASE=http://192.168.129.148:8001/v1 \
-MODEL_NAME=sweagent-lm-32b \
-MODEL_PATH=/sharedata/liyuchen/models/SWE-agent-LM-32B \
+MODEL_NAME=sweagent-32b \
+MODEL_PATH=/sharedata/liyuchen/models/sweagent-32b \
 INSTANCE_SLICE=:5 \
 NUM_WORKERS=4 \
 PREPARE_FIRST=0 \
 POSTPROCESS_DATASET_SIZE=5 \
-EVAL_RUNTIME_ROOT=.runtime/ascend-eval-sweagent-lm-32b-smoke-5 \
-SCORE_RUNTIME_ROOT=.runtime/ascend-score-sweagent-lm-32b-smoke-5 \
+EVAL_RUNTIME_ROOT=.runtime/ascend-eval-sweagent-32b-smoke-5 \
+SCORE_RUNTIME_ROOT=.runtime/ascend-score-sweagent-32b-smoke-5 \
 bash sh/run_sweagent_formal_remote_infer.sh
 ```
 

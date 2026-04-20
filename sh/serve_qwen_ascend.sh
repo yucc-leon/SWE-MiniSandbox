@@ -44,7 +44,7 @@ if [[ -z "${MAX_MODEL_LEN}" ]]; then
       MAX_MODEL_LEN=65536
       MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-4096}
       ;;
-    sweagent-7b|SWE-agent-LM-7B*|SWE-agent-LM-32B*|sweagent-lm-32b)
+    sweagent-7b|SWE-agent-LM-7B*|SWE-agent-LM-32B*|sweagent-32b|sweagent-lm-32b)
       MAX_MODEL_LEN=32768
       MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-32768}
       ;;

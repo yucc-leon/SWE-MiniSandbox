@@ -56,7 +56,7 @@ if [[ -z "${AGENT_MAX_INPUT_TOKENS}" ]]; then
     Qwen3-4B-Instruct-2507|Qwen3-4B-*)
       AGENT_MAX_INPUT_TOKENS=65536
       ;;
-    sweagent-7b|SWE-agent-LM-7B*)
+    sweagent-7b|SWE-agent-LM-7B*|SWE-agent-LM-32B*|sweagent-32b|sweagent-lm-32b)
       AGENT_MAX_INPUT_TOKENS=32768
       ;;
     *)

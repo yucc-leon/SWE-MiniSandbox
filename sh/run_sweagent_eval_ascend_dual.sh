@@ -58,7 +58,7 @@ if [[ -z "${MAX_MODEL_LEN}" ]]; then
     Qwen3-4B-Instruct-2507|Qwen3-4B-*)
       MAX_MODEL_LEN=65536
       ;;
-    sweagent-7b|SWE-agent-LM-7B*)
+    sweagent-7b|SWE-agent-LM-7B*|SWE-agent-LM-32B*|sweagent-32b|sweagent-lm-32b)
       MAX_MODEL_LEN=32768
       ;;
     *)
@@ -69,7 +69,7 @@ fi
 
 if [[ -z "${NPUS_PER_SERVER}" ]]; then
   case "${MODEL_BASENAME}" in
-    Qwen3-4B-Instruct-2507|Qwen3-4B-*|sweagent-7b|SWE-agent-LM-7B*)
+    Qwen3-4B-Instruct-2507|Qwen3-4B-*|sweagent-7b|SWE-agent-LM-7B*|SWE-agent-LM-32B*|sweagent-32b|sweagent-lm-32b)
       NPUS_PER_SERVER=1
       ;;
     *)
