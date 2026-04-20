@@ -203,20 +203,25 @@ INSTANCE_SLICE=:5 \
 NUM_WORKERS=4 \
 PREPARE_FIRST=0 \
 POSTPROCESS_DATASET_SIZE=5 \
-PROBE_CHECK_CHAT=0 \
+PROBE_CHAT_MODEL=sweagent-32b \
 EVAL_RUNTIME_ROOT=.runtime/ascend-eval-sweagent-32b-smoke-5-openai \
 SCORE_RUNTIME_ROOT=.runtime/ascend-score-sweagent-32b-smoke-5-openai \
 bash sh/run_sweagent_formal_remote_infer.sh
 ```
 
-这里 `MODEL_NAME=openai/sweagent-32b` 是 SWE-agent/LiteLLM 侧需要的 provider 前缀；vLLM server 暴露的模型名仍是 `sweagent-32b`。因此正式脚本里的 chat probe 暂时关闭，单独用 server 暴露名检查：
+这里 `MODEL_NAME=openai/sweagent-32b` 是 SWE-agent/LiteLLM 侧需要的 provider 前缀；vLLM server 暴露的模型名仍是 `sweagent-32b`，所以 chat probe 使用 `PROBE_CHAT_MODEL=sweagent-32b`。
 
-```bash
-python sh/check_openai_compatible_server.py \
-  --api-base http://192.168.230.138:8001/v1 \
-  --chat-model sweagent-32b \
-  --check-chat \
-  --timeout 60
-```
+当前已完成一次 `:5` smoke：
+
+- eval root: `.runtime/ascend-eval-sweagent-32b-smoke-5-openai`
+- score root: `.runtime/ascend-score-sweagent-32b-smoke-5-openai`
+- generation predictions: `5/5`
+- scoring completed: `5/5`
+- resolved: `3/5`
+- resolved rate: `60.0%`
+- empty patch: `0`
+- scoring error: `0`
+- scored without submission: `0`
+- unresolved: `sympy__sympy-19783`, `django__django-11211`
 
 如果 `:5` 没有协议、格式或 scoring 问题，再跑 `:50`。不要直接用 500 题判断新模型，因为 server 兼容性、batch token 设置和长尾稳定性都需要先确认。

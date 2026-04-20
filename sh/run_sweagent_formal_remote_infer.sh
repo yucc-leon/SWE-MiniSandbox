@@ -19,6 +19,7 @@ PROBE_TIMEOUT=${PROBE_TIMEOUT:-600}
 PROBE_POLL_INTERVAL=${PROBE_POLL_INTERVAL:-5}
 PROBE_REQUEST_TIMEOUT=${PROBE_REQUEST_TIMEOUT:-10}
 PROBE_CHECK_CHAT=${PROBE_CHECK_CHAT:-1}
+PROBE_CHAT_MODEL=${PROBE_CHAT_MODEL:-${MODEL_NAME}}
 
 INSTANCE_SLICE=${INSTANCE_SLICE:-:500}
 NUM_WORKERS=${NUM_WORKERS:-16}
@@ -120,7 +121,7 @@ if [[ "${PROBE_REMOTE_SERVER}" == "1" ]]; then
     --request-timeout "${PROBE_REQUEST_TIMEOUT}"
   )
   if [[ "${PROBE_CHECK_CHAT}" == "1" ]]; then
-    probe_args+=(--check-chat --chat-model "${MODEL_NAME}")
+    probe_args+=(--check-chat --chat-model "${PROBE_CHAT_MODEL}")
   fi
   python "${ROOT_DIR}/sh/run_remote_inference_task.py" "${probe_args[@]}"
 fi

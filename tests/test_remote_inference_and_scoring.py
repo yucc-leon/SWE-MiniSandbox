@@ -134,6 +134,15 @@ def test_local_ascend_serve_script_supports_served_model_name():
     assert 'tee -a "${SERVE_LOG_PATH}"' in script_text
 
 
+def test_formal_remote_infer_supports_separate_probe_chat_model():
+    script_text = (ROOT / "sh/run_sweagent_formal_remote_infer.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PROBE_CHAT_MODEL=${PROBE_CHAT_MODEL:-${MODEL_NAME}}" in script_text
+    assert 'probe_args+=(--check-chat --chat-model "${PROBE_CHAT_MODEL}")' in script_text
+
+
 def test_remote_inference_doctor_accepts_consistent_runtime(tmp_path):
     mod = _load_module("run_remote_inference_task", "sh/run_remote_inference_task.py")
 
