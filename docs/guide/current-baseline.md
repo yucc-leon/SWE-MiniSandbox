@@ -185,19 +185,38 @@ cd /sharedata/liyuchen/workspace/SWE-MiniSandbox
 bash sh/serve_qwen_ascend.sh
 ```
 
+`sh/serve_qwen_ascend.sh` 默认会把 serve 日志写到共享仓库下：
+
+```text
+.runtime/serve-logs/<model>-<port>-<timestamp>.log
+```
+
+如需指定路径，设置 `SERVE_LOG_PATH=/sharedata/.../serve.log`；如需关闭落盘，设置 `SERVE_LOG_PATH=none`。
+
 本地先跑 smoke：
 
 ```bash
-API_BASE=http://192.168.129.148:8001/v1 \
-MODEL_NAME=sweagent-32b \
+API_BASE=http://192.168.230.138:8001/v1 \
+MODEL_NAME=openai/sweagent-32b \
 MODEL_PATH=/sharedata/liyuchen/models/sweagent-32b \
 INSTANCE_SLICE=:5 \
 NUM_WORKERS=4 \
 PREPARE_FIRST=0 \
 POSTPROCESS_DATASET_SIZE=5 \
-EVAL_RUNTIME_ROOT=.runtime/ascend-eval-sweagent-32b-smoke-5 \
-SCORE_RUNTIME_ROOT=.runtime/ascend-score-sweagent-32b-smoke-5 \
+PROBE_CHECK_CHAT=0 \
+EVAL_RUNTIME_ROOT=.runtime/ascend-eval-sweagent-32b-smoke-5-openai \
+SCORE_RUNTIME_ROOT=.runtime/ascend-score-sweagent-32b-smoke-5-openai \
 bash sh/run_sweagent_formal_remote_infer.sh
+```
+
+这里 `MODEL_NAME=openai/sweagent-32b` 是 SWE-agent/LiteLLM 侧需要的 provider 前缀；vLLM server 暴露的模型名仍是 `sweagent-32b`。因此正式脚本里的 chat probe 暂时关闭，单独用 server 暴露名检查：
+
+```bash
+python sh/check_openai_compatible_server.py \
+  --api-base http://192.168.230.138:8001/v1 \
+  --chat-model sweagent-32b \
+  --check-chat \
+  --timeout 60
 ```
 
 如果 `:5` 没有协议、格式或 scoring 问题，再跑 `:50`。不要直接用 500 题判断新模型，因为 server 兼容性、batch token 设置和长尾稳定性都需要先确认。

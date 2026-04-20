@@ -25,6 +25,17 @@ TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-}
 PREFLIGHT_TIMEOUT=${PREFLIGHT_TIMEOUT:-60}
 ASCEND_NNAL_ENV=${ASCEND_NNAL_ENV:-/usr/local/Ascend/nnal/atb/set_env.sh}
 ASCEND_TOOLKIT_ENV=${ASCEND_TOOLKIT_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}
+LOG_DIR=${LOG_DIR:-${ROOT_DIR}/.runtime/serve-logs}
+LOG_MODEL_NAME=$(basename "${MODEL_PATH}")
+LOG_TIMESTAMP=${LOG_TIMESTAMP:-$(date +%Y%m%dT%H%M%S)}
+SERVE_LOG_PATH=${SERVE_LOG_PATH:-${SERVER_LOG_PATH:-${LOG_DIR}/${LOG_MODEL_NAME}-${PORT}-${LOG_TIMESTAMP}.log}}
+
+if [[ "${SERVE_LOG_PATH}" != "none" && -z "${SWE_SERVE_LOG_ACTIVE:-}" ]]; then
+  mkdir -p "$(dirname "${SERVE_LOG_PATH}")"
+  export SWE_SERVE_LOG_ACTIVE=1
+  exec > >(tee -a "${SERVE_LOG_PATH}") 2>&1
+  echo "Logging serve output to ${SERVE_LOG_PATH}"
+fi
 
 ACTIVATE_SCRIPT="${MINIFORGE_ROOT}/bin/activate"
 VLLM_ENV_PREFIX="${MINIFORGE_ROOT}/envs/${VLLM_ENV_NAME}"

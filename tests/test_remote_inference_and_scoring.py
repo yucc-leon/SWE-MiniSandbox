@@ -128,6 +128,10 @@ def test_local_ascend_serve_script_supports_served_model_name():
     assert 'EXTRA_ARGS+=(--served-model-name "${SERVED_MODEL_NAME}")' in script_text
     assert "SWE-agent-LM-32B*" in script_text
     assert "sweagent-32b" in script_text
+    assert "LOG_DIR=${LOG_DIR:-${ROOT_DIR}/.runtime/serve-logs}" in script_text
+    assert "SERVE_LOG_PATH=${SERVE_LOG_PATH:-${SERVER_LOG_PATH:-${LOG_DIR}/${LOG_MODEL_NAME}-${PORT}-${LOG_TIMESTAMP}.log}}" in script_text
+    assert '${SERVE_LOG_PATH}" != "none"' in script_text
+    assert 'tee -a "${SERVE_LOG_PATH}"' in script_text
 
 
 def test_remote_inference_doctor_accepts_consistent_runtime(tmp_path):
