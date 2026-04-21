@@ -421,6 +421,9 @@ the bootstrap script pins `litellm==1.82.6` instead of leaving it unbounded.
   (for local models this is the absolute model path, not `openai//...`)
 - `use_chroot: false` to avoid depending on privileged namespace setup
 
+This no-chroot path is an evaluation fallback only. RL training should still use
+chroot/mount namespace or Docker/container isolation. See `docs/guide/runtime-policy.md`.
+
 `sh/run_sweagent_eval_ascend.sh` also exports `NO_PROXY=127.0.0.1,localhost,0.0.0.0`
 and clears `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (upper and lower case)
 so LiteLLM/OpenAI clients do not accidentally send localhost traffic through the machine proxy.
@@ -446,6 +449,7 @@ RL training is not ready for full Ascend validation yet. The current blockers ar
 - `SkyRL/skyrl-train/pyproject.toml` pins CUDA-specific `torch`, `flash-attn`, and `vllm` extras.
 - `SkyRL/skyrl-train/examples/swe_agent/run_swe_3B_sandbox.sh` hardcodes `generator.backend=vllm` and `generator.weight_sync_backend=nccl`.
 - Existing training examples assume NVIDIA-style GPU placement and memory flags.
+- no-chroot is intentionally scoped to evaluation fallback; training reward should run with chroot/mount namespace or Docker/container isolation.
 
 ## RL Preparation Checklist
 
@@ -455,5 +459,6 @@ Before attempting real Ascend RL training, finish these steps:
 2. Decide whether RL inference will use `vllm-ascend`, another Ascend backend, or a remote OpenAI-compatible server.
 3. Replace CUDA-only package pins and `nccl` assumptions in the SkyRL training stack.
 4. Validate distributed communication and placement on Ascend before touching large-scale rollout counts.
+5. Run `bash sh/require_chroot_training.sh` on the training node/pod and keep `use_chroot=true` for sandbox training.
 
 Until those items are verified on hardware, treat the RL path as “preparation complete, runtime backend pending”.

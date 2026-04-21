@@ -16,6 +16,7 @@ instances:
     shared_venv: /home/smith/shared_venv
     git_folder: testbed
     type: sandbox
+    use_chroot: true
 agent:
   step_limit: 30
   type: default

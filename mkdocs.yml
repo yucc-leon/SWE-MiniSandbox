@@ -46,6 +46,7 @@ nav:
         - Architecture: guide/architecture.md
         - Ascend Guide: guide/ascend.md
         - Ascend Recovery Guide: guide/ascend-recovery.md
+        - Runtime Policy: guide/runtime-policy.md
         - Evaluation Modes: guide/eval-modes.md
         - Current Evaluation Stack: guide/current-eval-stack.md
         - Current Baseline: guide/current-baseline.md

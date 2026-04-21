@@ -7,6 +7,8 @@
 
 本文只覆盖 evaluation 主链，不展开 RL training。
 
+运行时边界见 `docs/guide/runtime-policy.md`：no-chroot 是 evaluation fallback，RL training 仍然走 chroot/mount namespace 或 Docker/container 等价隔离。
+
 ## 1. 当前方案的定位
 
 当前可运行方案不是原始 SWE-Agent docker benchmark 直跑，也不是单纯的本机 vLLM 脚本，而是一个混合体系：
@@ -42,14 +44,16 @@
 
 - `sandboxdev/swesandbox/sandbox_deployment.py`
   作为主要 deployment
-- `use_chroot: false` 成为 Ascend 路径下的默认工作模式
-- 不依赖容器 namespace/chroot 才能运行 evaluation
+- `use_chroot: false` 成为 Ascend evaluation fallback 的默认工作模式
+- 不依赖容器 namespace/chroot 就能运行 evaluation
 
 这意味着 evaluation 的主要隔离边界从“容器”变成了：
 
 - 独立 sandbox 根目录
 - 独立 repo copy
 - 独立 shared venv / git cache / tool root
+
+这不是 training 隔离边界。RL training 的 reward 链路仍要求 chroot/mount namespace 或 Docker/container deployment。
 
 ### 2.2 新增 no-chroot 运行路径
 
@@ -64,6 +68,7 @@
 
 - 原始设计期望用 `unshare + mount + chroot` 做更强隔离
 - 现在为了适应无特权环境、K8s/平台容器、Ascend 机器限制，必须支持 plain bash session + 路径映射
+- 该 plain bash 路径只作为 evaluation fallback；训练入口应通过 `sh/require_chroot_training.sh` 做 chroot 权限预检
 
 围绕这个 no-chroot 路径，还配套改了：
 

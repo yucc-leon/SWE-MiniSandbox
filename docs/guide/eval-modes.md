@@ -14,6 +14,11 @@
 
 因此，它适合做工程迭代和模型横向比较，不适合直接拿来回答“和官方 leaderboard 差多少”。
 
+运行时策略单独固定在 `docs/guide/runtime-policy.md`：
+
+- no-chroot 只作为 evaluation fallback
+- RL training 仍然要求 chroot/mount namespace 或 Docker/container 等价隔离
+
 ## 2. 推荐的三层口径
 
 ### 2.1 MiniSandbox Baseline
@@ -65,7 +70,7 @@
 
 - 模型间横向比较
 - 工程稳定性迭代
-- 从 evaluation 过渡到 RL training 的基础设施联调
+- 远端推理服务、pipeline scoring、sandbox cache 的评测侧联调
 
 但不适合直接声称“等同官方分数”。
 
@@ -122,3 +127,16 @@ bash "${ROOT}/sh/run_sweagent_formal_remote_infer.sh"
 而不是：
 
 `official score reproduction`
+
+## 5. no-chroot 和训练的边界
+
+no-chroot 的价值是让受限机器在没有 `CAP_SYS_ADMIN` / `unshare --mount` 的情况下继续跑 evaluation。
+
+它不应进入 RL training，原因是训练会重复采样同一批实例，环境 false negative 会被 policy update 放大。即便当前 no-chroot 已经做了实例级 `TMPDIR`、venv cache lock、atomic symlink 等稳定性加固，它仍然无法隔离宿主 `/proc`，也无法覆盖硬编码 `/tmp/foo` 的项目测试。
+
+训练入口应显式要求：
+
+```bash
+bash sh/require_chroot_training.sh
++generator.sweagent.instances.deployment.use_chroot=true
+```

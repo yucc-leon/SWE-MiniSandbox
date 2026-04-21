@@ -2,6 +2,7 @@ set -x
 basedir=/home/zeta/SWE
 source $basedir/miniconda3/bin/activate
 conda activate rl
+bash $basedir/SWE-MiniSandbox/sh/require_chroot_training.sh
 cd $basedir/SWE-MiniSandbox/SkyRL/skyrl-train
 
 #export WANDB_MODE=offline
@@ -89,6 +90,7 @@ python -m examples.swe_agent.main_swe \
   +generator.sweagent.instances.deployment.git_base_path=$cached_git \
   +generator.sweagent.instances.deployment.shared_venv=$shared_venv_dir \
   +generator.sweagent.instances.deployment.tool_path=$basedir/SWE-MiniSandbox/SWE-agent/tools \
+  +generator.sweagent.instances.deployment.use_chroot=true \
   +generator.sweagent.instances.type=skyrl \
   +generator.sweagent.output_dir=$output_dir \
   +generator.sweagent.instances.deployment.conda_env=$env_dir \
