@@ -305,6 +305,9 @@ class SandboxDeployment(AbstractDeployment):
             f"export SWE_SANDBOX_ROOT_DIR=\"{self._config.root_dir}\"; "
             f"export SWE_SANDBOX_GIT_FOLDER=\"{self._config.git_folder}\"; "
             f"export SWE_SANDBOX_TOOL_PATH=\"{self.abs_tool_path}\"; "
+            f"mkdir -p \"{self._config.root_dir}/tmp\"; "
+            f"export TMPDIR=\"{self._config.root_dir}/tmp\"; "
+            f"export TMP=\"$TMPDIR\"; export TEMP=\"$TMPDIR\"; "
             f"cd {self._config.root_dir}; exec /bin/bash --noprofile --norc'"
         )
         return cmd + "\n"

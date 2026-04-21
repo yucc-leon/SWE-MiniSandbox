@@ -92,6 +92,9 @@ def test_startup_nochroot():
         f"export SWE_SANDBOX_ROOT_DIR=\"{root_dir}\"; "
         f"export SWE_SANDBOX_GIT_FOLDER=\"testbed\"; "
         f"export SWE_SANDBOX_TOOL_PATH=\"/tools\"; "
+        f"mkdir -p \"{root_dir}/tmp\"; "
+        f"export TMPDIR=\"{root_dir}/tmp\"; "
+        f"export TMP=\"$TMPDIR\"; export TEMP=\"$TMPDIR\"; "
         f"cd {root_dir}; exec /bin/bash --noprofile --norc'"
     )
     cmd += "\n"
@@ -103,6 +106,9 @@ def test_startup_nochroot():
         ("包含 sandbox root 环境变量", f"SWE_SANDBOX_ROOT_DIR=\"{root_dir}\"" in cmd),
         ("包含 git_folder 环境变量", "SWE_SANDBOX_GIT_FOLDER=\"testbed\"" in cmd),
         ("包含 tool_path 环境变量", "SWE_SANDBOX_TOOL_PATH=\"/tools\"" in cmd),
+        ("创建实例级 tmp 目录", f"mkdir -p \"{root_dir}/tmp\"" in cmd),
+        ("包含 TMPDIR 环境变量", f"TMPDIR=\"{root_dir}/tmp\"" in cmd),
+        ("TMP/TEMP 继承 TMPDIR", 'export TMP="$TMPDIR"; export TEMP="$TMPDIR"' in cmd),
         ("以换行结尾", cmd.endswith("\n")),
         ("不包含 unshare", "unshare" not in cmd),
         ("不包含 chroot", "chroot" not in cmd),
@@ -337,6 +343,17 @@ cd {root_dir}
 echo "PWD=$(pwd)"
 echo "TESTBED_EXISTS=$(test -d testbed && echo yes || echo no)"
 echo "TOOLS_EXISTS=$(test -d tools && echo yes || echo no)"
+mkdir -p "{root_dir}/tmp"
+export TMPDIR="{root_dir}/tmp"
+export TMP="$TMPDIR"
+export TEMP="$TMPDIR"
+echo "TMPDIR=$TMPDIR"
+echo "TMP=$TMP"
+echo "TEMP=$TEMP"
+python - <<'PY'
+import tempfile
+print("TEMPFILE_DIR=" + tempfile.gettempdir())
+PY
 cat testbed/hello.txt
 echo "SANDBOX_PATH_TEST={os.path.join(root_dir, 'testbed')}"
 ls testbed/
@@ -353,6 +370,10 @@ ls testbed/
             ("cd 到 root_dir 成功", f"PWD={root_dir}" in output),
             ("testbed 目录存在", "TESTBED_EXISTS=yes" in output),
             ("tools 目录存在", "TOOLS_EXISTS=yes" in output),
+            ("TMPDIR 指向实例 tmp", f"TMPDIR={root_dir}/tmp" in output),
+            ("TMP 指向实例 tmp", f"TMP={root_dir}/tmp" in output),
+            ("TEMP 指向实例 tmp", f"TEMP={root_dir}/tmp" in output),
+            ("Python tempfile 使用实例 tmp", f"TEMPFILE_DIR={root_dir}/tmp" in output),
             ("能读取 testbed 内文件", "hello from testbed" in output),
             ("sandbox_path 拼接正确", f"SANDBOX_PATH_TEST={root_dir}/testbed" in output),
         ]
