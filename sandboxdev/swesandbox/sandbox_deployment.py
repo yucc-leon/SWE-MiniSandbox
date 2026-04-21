@@ -28,6 +28,7 @@ from r2egym.swesmith.utils import get_test_command,get_install_commands
 from .swe_bench_instance_map import instance_map,instance_to_skip
 import time
 import contextlib
+import fcntl
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     END_TEST_OUTPUT,
@@ -593,36 +594,59 @@ class SandboxDeployment(AbstractDeployment):
         path. To avoid building one copy outside the sandbox and then copying it
         back in, we point that shared path at the sandbox copy with a symlink.
         """
-        shared = Path(shared_path)
-        sandbox = Path(sandbox_path)
-        shared.parent.mkdir(parents=True, exist_ok=True)
-        if shared.is_symlink() or shared.exists():
-            if shared.is_dir() and not shared.is_symlink():
-                shutil.rmtree(shared)
-            else:
-                shared.unlink()
-        shared.symlink_to(sandbox, target_is_directory=True)
+        self._replace_with_symlink(shared_path, sandbox_path)
+
+    @contextlib.contextmanager
+    def _file_lock(self, lock_path: Path):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "w", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _replace_with_symlink(self, link_path: str, target_path: str) -> None:
         link = Path(link_path)
         target = Path(target_path)
         link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink() or link.exists():
-            if link.is_dir() and not link.is_symlink():
-                shutil.rmtree(link)
-            else:
-                link.unlink()
-        link.symlink_to(target, target_is_directory=True)
+        lock_path = link.parent / f".{link.name}.lock"
+        tmp_link = link.parent / f".{link.name}.tmp.{uuid.uuid4().hex}"
+        with self._file_lock(lock_path):
+            with contextlib.suppress(FileNotFoundError):
+                tmp_link.unlink()
+            tmp_link.symlink_to(target, target_is_directory=True)
+            try:
+                if link.exists() and link.is_dir() and not link.is_symlink():
+                    shutil.rmtree(link)
+                os.replace(tmp_link, link)
+            finally:
+                if tmp_link.is_symlink() or tmp_link.exists():
+                    with contextlib.suppress(FileNotFoundError):
+                        tmp_link.unlink()
 
     def _ensure_extracted_venv_cache(self, tar_path: str, cache_dir: str) -> str:
         cache = Path(cache_dir)
         cache_python = cache / "bin" / "python"
-        if cache_python.exists():
-            return str(cache)
-        if cache.exists():
-            shutil.rmtree(cache, ignore_errors=True)
-        cache.mkdir(parents=True, exist_ok=True)
-        tar_extract(tar_path, str(cache), threads=2)
+        lock_path = cache.parent / f".{cache.name}.lock"
+        with self._file_lock(lock_path):
+            if cache_python.exists():
+                return str(cache)
+            if cache.exists():
+                shutil.rmtree(cache, ignore_errors=True)
+            tmp_cache = cache.parent / f".{cache.name}.tmp.{uuid.uuid4().hex}"
+            if tmp_cache.exists():
+                shutil.rmtree(tmp_cache, ignore_errors=True)
+            tmp_cache.mkdir(parents=True, exist_ok=True)
+            try:
+                tar_extract(tar_path, str(tmp_cache), threads=2)
+                tmp_python = tmp_cache / "bin" / "python"
+                if not tmp_python.exists():
+                    raise RuntimeError(f"cached venv extract missing python executable: {tmp_python}")
+                os.replace(tmp_cache, cache)
+            finally:
+                if tmp_cache.exists():
+                    shutil.rmtree(tmp_cache, ignore_errors=True)
         if not cache_python.exists():
             raise RuntimeError(f"cached venv extract missing python executable: {cache_python}")
         return str(cache)
@@ -1015,11 +1039,9 @@ class SandboxDeployment(AbstractDeployment):
                 await runtime.close()
 
         asyncio.create_task(_close_runtime(self._runtime))
-        if not self._config.use_chroot and self.abs_venv_dir:
-            with contextlib.suppress(FileNotFoundError):
-                shared_venv = Path(self.abs_venv_dir)
-                if shared_venv.is_symlink():
-                    shared_venv.unlink()
+        # In no-chroot mode the absolute shared venv path is process-shared.
+        # Per-instance teardown must not unlink it, or concurrent instances can
+        # lose their active venv while tests are still running.
         self.unmount()
         os.system(f"rm -rf {self.root_dir}")
     def unmount(self):
