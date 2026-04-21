@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,6 +142,94 @@ def test_formal_remote_infer_supports_separate_probe_chat_model():
 
     assert "PROBE_CHAT_MODEL=${PROBE_CHAT_MODEL:-${MODEL_NAME}}" in script_text
     assert 'probe_args+=(--check-chat --chat-model "${PROBE_CHAT_MODEL}")' in script_text
+
+
+def test_pipeline_scoring_discovers_stable_predictions(tmp_path):
+    mod = _load_module("pipeline_scoring_ascend", "sh/pipeline_scoring_ascend.py")
+
+    eval_root = tmp_path / "eval"
+    pred_dir = eval_root / "output" / "demo-1"
+    pred_dir.mkdir(parents=True)
+    pred_path = pred_dir / "demo-1.pred"
+    pred_path.write_text(
+        json.dumps({"instance_id": "demo-1", "model_patch": ""}),
+        encoding="utf-8",
+    )
+
+    assert mod.discover_predictions(eval_root, stable_seconds=10, now=0) == {}
+    discovered = mod.discover_predictions(eval_root, stable_seconds=0, now=10**12)
+    assert list(discovered) == ["demo-1"]
+    assert discovered["demo-1"]["model_patch"] == ""
+
+
+def test_pipeline_scoring_builds_exact_instance_filter():
+    mod = _load_module("pipeline_scoring_ascend", "sh/pipeline_scoring_ascend.py")
+
+    pattern = mod.build_instance_filter(["django__django-11211", "sympy__sympy-19954"])
+
+    assert re.match(pattern, "django__django-11211")
+    assert re.match(pattern, "sympy__sympy-19954")
+    assert not re.match(pattern, "django__django-11211-extra")
+
+
+def test_pipeline_scoring_reports_failed_shards(tmp_path):
+    mod = _load_module("pipeline_scoring_ascend", "sh/pipeline_scoring_ascend.py")
+
+    shard_dir = tmp_path / "score" / "shards" / "shard-000000"
+    shard_dir.mkdir(parents=True)
+    (shard_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "shard_index": 0,
+                "status": "failed",
+                "instance_ids": ["demo-1", "demo-2"],
+                "returncode": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = mod.write_failed_shard_summary(tmp_path / "score")
+    saved_summary = json.loads((tmp_path / "score" / "failed_shards.json").read_text())
+
+    assert summary["failed_shard_count"] == 1
+    assert summary["failed_ids"] == ["demo-1", "demo-2"]
+    assert saved_summary == summary
+
+
+def test_formal_remote_infer_can_enable_pipeline_scoring():
+    script_text = (ROOT / "sh/run_sweagent_formal_remote_infer.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PIPELINE_SCORING=${PIPELINE_SCORING:-0}" in script_text
+    assert "run_pipeline_scoring_ascend.sh" in script_text
+    assert "waiting for pipeline scorer to drain final predictions" in script_text
+
+
+def test_scoring_script_allows_explicit_empty_instance_slice():
+    script_text = (ROOT / "sh/run_swebench_scoring_ascend.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "INSTANCE_SLICE=${INSTANCE_SLICE-:1}" in script_text
+    assert "INSTANCE_SLICE=${INSTANCE_SLICE:-:1}" not in script_text
+    assert "SANDBOX_ROOT=${SANDBOX_ROOT:-${RUNTIME_ROOT}/sandbox}" in script_text
+    assert "GITCACHE_ROOT=${GITCACHE_ROOT:-${RUNTIME_ROOT}/gitcache}" in script_text
+    assert "SHARED_VENV_ROOT=${SHARED_VENV_ROOT:-${RUNTIME_ROOT}/shared_venv}" in script_text
+    assert '--instances.deployment.git_base_path "${GITCACHE_ROOT}"' in script_text
+    assert '--instances.deployment.shared_venv "${SHARED_VENV_ROOT}"' in script_text
+
+
+def test_pipeline_scoring_wrapper_uses_swe_sandbox_python_for_merge():
+    script_text = (ROOT / "sh/run_pipeline_scoring_ascend.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PYTHON_BIN=${PYTHON_BIN:-${MINIFORGE_ROOT}/envs/${RUN_ENV_NAME}/bin/python}" in script_text
+    assert '--python-bin "${PYTHON_BIN}"' in script_text
+    assert "MERGE_ONLY=${MERGE_ONLY:-0}" in script_text
+    assert "args+=(--merge-only)" in script_text
 
 
 def test_remote_inference_doctor_accepts_consistent_runtime(tmp_path):

@@ -9,11 +9,14 @@ WHEELHOUSE_ROOT=${WHEELHOUSE_ROOT:-/sharedata/liyuchen/minisandbox-wheelhouse}
 RUN_ENV_NAME=${RUN_ENV_NAME:-swe-sandbox}
 CONFIG_PATH=${CONFIG_PATH:-${ROOT_DIR}/config/sweagent_score_ascend.yaml}
 NUM_WORKERS=${NUM_WORKERS:-4}
-INSTANCE_SLICE=${INSTANCE_SLICE:-:1}
+INSTANCE_SLICE=${INSTANCE_SLICE-:1}
 INSTANCE_FILTER=${INSTANCE_FILTER:-.*}
 DATASET_DIR=${DATASET_DIR:-${ROOT_DIR}/dataset/SWE-bench/SWE-bench_Verified/data}
 DATASET_SPLIT=${DATASET_SPLIT:-test}
 RUNTIME_ROOT=${RUNTIME_ROOT:-${RUNTIME_ROOT_BASE}/ascend-score}
+SANDBOX_ROOT=${SANDBOX_ROOT:-${RUNTIME_ROOT}/sandbox}
+GITCACHE_ROOT=${GITCACHE_ROOT:-${RUNTIME_ROOT}/gitcache}
+SHARED_VENV_ROOT=${SHARED_VENV_ROOT:-${RUNTIME_ROOT}/shared_venv}
 PREDICTIONS_PATH=${PREDICTIONS_PATH:-}
 PREFLIGHT_TIMEOUT=${PREFLIGHT_TIMEOUT:-10}
 NO_PROXY_LIST=${NO_PROXY_LIST:-127.0.0.1,localhost,0.0.0.0}
@@ -40,9 +43,9 @@ fi
 
 mkdir -p \
   "${RUNTIME_ROOT}/output" \
-  "${RUNTIME_ROOT}/sandbox" \
-  "${RUNTIME_ROOT}/gitcache" \
-  "${RUNTIME_ROOT}/shared_venv" \
+  "${SANDBOX_ROOT}" \
+  "${GITCACHE_ROOT}" \
+  "${SHARED_VENV_ROOT}" \
   "${WHEELHOUSE_ROOT}"
 
 if [[ -x "${RUN_ENV_BIN}/python" ]]; then
@@ -90,9 +93,9 @@ python -m sweagent run-batch \
   --instances.filter "${INSTANCE_FILTER}" \
   --instances.slice "${INSTANCE_SLICE}" \
   --instances.model_patch_file "${PREDICTIONS_PATH}" \
-  --instances.deployment.root_base "${RUNTIME_ROOT}/sandbox" \
-  --instances.deployment.git_base_path "${RUNTIME_ROOT}/gitcache" \
-  --instances.deployment.shared_venv "${RUNTIME_ROOT}/shared_venv" \
+  --instances.deployment.root_base "${SANDBOX_ROOT}" \
+  --instances.deployment.git_base_path "${GITCACHE_ROOT}" \
+  --instances.deployment.shared_venv "${SHARED_VENV_ROOT}" \
   --instances.deployment.tool_path "${ROOT_DIR}/SWE-agent/tools" \
   --instances.deployment.conda_env "${CONDA_BACKEND_ROOT}" \
   --instances.deployment.wheelhouse "${WHEELHOUSE_ROOT}" \

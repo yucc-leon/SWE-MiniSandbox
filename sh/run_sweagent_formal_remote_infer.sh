@@ -27,6 +27,11 @@ PREPARE_FIRST=${PREPARE_FIRST:-1}
 PREPARE_NUM_WORKERS=${PREPARE_NUM_WORKERS:-${NUM_WORKERS}}
 POSTPROCESS_DATASET_SIZE=${POSTPROCESS_DATASET_SIZE:-500}
 POSTPROCESS_SCORING=${POSTPROCESS_SCORING:-1}
+PIPELINE_SCORING=${PIPELINE_SCORING:-0}
+PIPELINE_SCORE_NUM_WORKERS=${PIPELINE_SCORE_NUM_WORKERS:-2}
+PIPELINE_SCORE_BATCH_SIZE=${PIPELINE_SCORE_BATCH_SIZE:-4}
+PIPELINE_SCORE_POLL_SECONDS=${PIPELINE_SCORE_POLL_SECONDS:-60}
+PIPELINE_SCORE_STABLE_SECONDS=${PIPELINE_SCORE_STABLE_SECONDS:-5}
 WATCHDOG_ENABLE=${WATCHDOG_ENABLE:-1}
 WATCHDOG_STALE_SECONDS=${WATCHDOG_STALE_SECONDS:-1800}
 WATCHDOG_POLL_SECONDS=${WATCHDOG_POLL_SECONDS:-60}
@@ -35,6 +40,7 @@ WATCHDOG_RECOVERY_GRACE_SECONDS=${WATCHDOG_RECOVERY_GRACE_SECONDS:-180}
 EVAL_RUNTIME_ROOT=${EVAL_RUNTIME_ROOT:-${RUNTIME_ROOT_BASE}/ascend-eval-sweagent7b-remote-formal}
 SCORE_RUNTIME_ROOT=${SCORE_RUNTIME_ROOT:-${RUNTIME_ROOT_BASE}/ascend-score-sweagent7b-remote-formal}
 PREDICTIONS_PATH=${PREDICTIONS_PATH:-${EVAL_RUNTIME_ROOT}/output/preds.json}
+PIPELINE_SCORE_LOG_PATH=${PIPELINE_SCORE_LOG_PATH:-${SCORE_RUNTIME_ROOT}/pipeline_scoring.log}
 
 if [[ ! -f "${EVAL_CONFIG_PATH}" ]]; then
   echo "eval config not found: ${EVAL_CONFIG_PATH}" >&2
@@ -135,6 +141,38 @@ echo "[formal-remote] api_base=${API_BASE}"
 echo "[formal-remote] instance_slice=${INSTANCE_SLICE}"
 echo "[formal-remote] num_workers=${NUM_WORKERS}"
 echo "[formal-remote] prepare_first=${PREPARE_FIRST}"
+echo "[formal-remote] pipeline_scoring=${PIPELINE_SCORING}"
+
+pipeline_score_pid=""
+stop_pipeline_scoring() {
+  if [[ -n "${pipeline_score_pid}" ]] && kill -0 "${pipeline_score_pid}" 2>/dev/null; then
+    touch "${SCORE_RUNTIME_ROOT}/STOP"
+    kill -TERM "${pipeline_score_pid}" 2>/dev/null || true
+    wait "${pipeline_score_pid}" 2>/dev/null || true
+  fi
+}
+trap stop_pipeline_scoring EXIT
+
+if [[ "${PIPELINE_SCORING}" == "1" ]]; then
+  mkdir -p "${SCORE_RUNTIME_ROOT}"
+  rm -f "${SCORE_RUNTIME_ROOT}/STOP"
+  echo "[formal-remote] starting pipeline scorer into ${SCORE_RUNTIME_ROOT}"
+  env \
+    EVAL_RUNTIME_ROOT="${EVAL_RUNTIME_ROOT}" \
+    SCORE_RUNTIME_ROOT="${SCORE_RUNTIME_ROOT}" \
+    FINAL_PREDICTIONS_PATH="${PREDICTIONS_PATH}" \
+    CONFIG_PATH="${SCORE_CONFIG_PATH}" \
+    DATASET_DIR="${ROOT_DIR}/dataset/SWE-bench/SWE-bench_Verified/data" \
+    DATASET_SPLIT="test" \
+    INSTANCE_SLICE="${INSTANCE_SLICE}" \
+    NUM_WORKERS="${PIPELINE_SCORE_NUM_WORKERS}" \
+    BATCH_SIZE="${PIPELINE_SCORE_BATCH_SIZE}" \
+    POLL_SECONDS="${PIPELINE_SCORE_POLL_SECONDS}" \
+    STABLE_SECONDS="${PIPELINE_SCORE_STABLE_SECONDS}" \
+    bash "${ROOT_DIR}/sh/run_pipeline_scoring_ascend.sh" >"${PIPELINE_SCORE_LOG_PATH}" 2>&1 &
+  pipeline_score_pid=$!
+  echo "${pipeline_score_pid}" > "${SCORE_RUNTIME_ROOT}/pipeline_scoring.pid"
+fi
 
 env \
   CONFIG_PATH="${EVAL_CONFIG_PATH}" \
@@ -159,6 +197,19 @@ env \
 if [[ ! -f "${PREDICTIONS_PATH}" ]]; then
   echo "predictions file not found after generation: ${PREDICTIONS_PATH}" >&2
   exit 1
+fi
+
+if [[ "${PIPELINE_SCORING}" == "1" ]]; then
+  echo "[formal-remote] waiting for pipeline scorer to drain final predictions"
+  wait "${pipeline_score_pid}"
+  pipeline_rc=$?
+  pipeline_score_pid=""
+  trap - EXIT
+  if [[ "${pipeline_rc}" != "0" ]]; then
+    echo "pipeline scorer failed with rc=${pipeline_rc}; see ${PIPELINE_SCORE_LOG_PATH}" >&2
+    exit "${pipeline_rc}"
+  fi
+  exit 0
 fi
 
 env \
