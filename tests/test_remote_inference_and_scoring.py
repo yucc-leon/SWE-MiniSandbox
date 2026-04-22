@@ -246,6 +246,49 @@ def test_pipeline_scoring_load_state_tracks_running_shards(tmp_path):
     assert state["failed_ids"] == []
 
 
+def test_pipeline_scoring_refresh_state_clears_stale_running_ids(tmp_path):
+    mod = _load_module("pipeline_scoring_ascend", "sh/pipeline_scoring_ascend.py")
+
+    score_root = tmp_path / "score"
+    mod.save_state(
+        score_root,
+        {
+            "next_shard_index": 1,
+            "scored_ids": [],
+            "running_ids": ["demo-done"],
+            "failed_ids": [],
+            "shards": [
+                {
+                    "shard_index": 0,
+                    "status": "running",
+                    "instance_ids": ["demo-done"],
+                }
+            ],
+        },
+    )
+    shard_dir = score_root / "shards" / "shard-000000"
+    shard_dir.mkdir(parents=True)
+    (shard_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "shard_index": 0,
+                "status": "completed",
+                "instance_ids": ["demo-done"],
+                "returncode": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = mod.refresh_state(score_root)
+    saved_state = json.loads((score_root / "pipeline_state.json").read_text())
+
+    assert state["running_ids"] == []
+    assert state["scored_ids"] == ["demo-done"]
+    assert state["shards"][0]["status"] == "completed"
+    assert saved_state == state
+
+
 def test_formal_remote_infer_can_enable_pipeline_scoring():
     script_text = (ROOT / "sh/run_sweagent_formal_remote_infer.sh").read_text(
         encoding="utf-8"

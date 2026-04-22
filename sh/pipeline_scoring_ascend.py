@@ -132,6 +132,12 @@ def save_state(score_runtime_root: Path, state: dict[str, Any]) -> None:
     _json_dump(score_runtime_root / "pipeline_state.json", state)
 
 
+def refresh_state(score_runtime_root: Path) -> dict[str, Any]:
+    state = load_state(score_runtime_root)
+    save_state(score_runtime_root, state)
+    return state
+
+
 def _completed_shard_output_dirs(score_runtime_root: Path) -> list[Path]:
     output_dirs: list[Path] = []
     for metadata_path in sorted((score_runtime_root / "shards").glob("shard-*/metadata.json")):
@@ -435,6 +441,7 @@ def run_watch(args: argparse.Namespace) -> int:
             if args.final_predictions_path and args.final_predictions_path.is_file():
                 predictions.update(load_predictions(args.final_predictions_path))
             merge_pipeline_results(args=args, predictions=predictions)
+            refresh_state(args.score_runtime_root)
 
         if (args.score_runtime_root / "STOP").exists():
             for shard in active_shards:
@@ -502,6 +509,7 @@ def run_watch(args: argparse.Namespace) -> int:
                         if args.final_predictions_path and args.final_predictions_path.is_file():
                             predictions.update(load_predictions(args.final_predictions_path))
                         merge_pipeline_results(args=args, predictions=predictions)
+                        refresh_state(args.score_runtime_root)
                     time.sleep(min(args.poll_seconds, 5))
                 print(f"[pipeline-scoring] max_shards={args.max_shards} reached")
                 return 0
@@ -524,6 +532,7 @@ def run_watch(args: argparse.Namespace) -> int:
         )
         if final_available and not pending and not active_shards:
             merge_pipeline_results(args=args, predictions=predictions)
+            refresh_state(args.score_runtime_root)
             summary = write_failed_shard_summary(args.score_runtime_root)
             if summary["failed_shard_count"]:
                 print(
