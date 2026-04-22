@@ -4,9 +4,42 @@ This note records the local CPU-side state needed to resume the in-progress
 SWE-agent-LM 32B evaluation after a machine reboot. The remote NPU vLLM server
 is expected to remain available.
 
+## New-Agent Handoff Checklist
+
+If you are a fresh agent with no conversation history, do this first:
+
+1. Work only in `/sharedata/liyuchen/workspace/SWE-MiniSandbox`.
+2. Do not create a new eval or score runtime root for this run.
+3. Do not use the older `tp4dp2` runtime roots; those are from a previous 500-run.
+4. Check whether the current run is still alive with the commands in
+   [Status Checks](#status-checks).
+5. If generation and scoring are still alive, do not relaunch anything. Just
+   monitor until completion or perform the graceful stop if shutdown is imminent.
+6. If the machine has rebooted or the eval/scoring processes are gone, execute
+   [Resume After Reboot](#resume-after-reboot), then relaunch with the exact same
+   runtime roots.
+7. If `output/preds.json` exists with 500 entries but scoring is incomplete,
+   only the pipeline scoring needs to drain. Relaunching the formal command with
+   the same roots is still acceptable because generation will skip existing
+   complete trajectories.
+
+Expected current run roots:
+
+```text
+eval:  .runtime/ascend-eval-sweagent-32b-baseline-fixview-500-20260422-045851
+score: .runtime/ascend-score-sweagent-32b-baseline-fixview-500-20260422-045851
+```
+
+Do not confuse them with this previous completed run:
+
+```text
+.runtime/ascend-eval-sweagent-32b-tp4dp2-500w16-pipeline-20260421-1010
+.runtime/ascend-score-sweagent-32b-tp4dp2-500w16-pipeline-20260421-1010
+```
+
 ## Run Identity
 
-- Branch/commit at capture: `feat/no-sysadmin`, `2514c0a`
+- Branch/commit at capture: `feat/no-sysadmin`, `3985885`
 - Captured at: `2026-04-22T10:55:06Z`
 - Remote API base: `http://192.168.123.93:8001/v1`
 - Served model name: `sweagent-32b`
@@ -79,6 +112,9 @@ is resumable at instance granularity, and scoring shards can be normalized after
 reboot.
 
 ## Resume After Reboot
+
+The PIDs in the progress snapshot are not meaningful after reboot. Treat them as
+historical evidence only.
 
 1. Enter the repository and update code if needed.
 
@@ -204,6 +240,8 @@ bash sh/run_sweagent_formal_remote_infer.sh
 ## Status Checks
 
 Use this after relaunch to confirm the run is advancing.
+Use it before relaunch as well; if the original eval/scoring processes are still
+alive, do not start a second copy.
 
 ```bash
 cd /sharedata/liyuchen/workspace/SWE-MiniSandbox
