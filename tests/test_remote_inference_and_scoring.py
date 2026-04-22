@@ -197,13 +197,64 @@ def test_pipeline_scoring_reports_failed_shards(tmp_path):
     assert saved_summary == summary
 
 
+def test_pipeline_scoring_pending_batch_skips_running_ids():
+    mod = _load_module("pipeline_scoring_ascend", "sh/pipeline_scoring_ascend.py")
+
+    predictions = {
+        "done": {"model_patch": "diff --git a/a b/a"},
+        "running": {"model_patch": "diff --git a/b b/b"},
+        "failed": {"model_patch": "diff --git a/c b/c"},
+        "pending": {"model_patch": "diff --git a/d b/d"},
+    }
+    state = {
+        "scored_ids": ["done"],
+        "running_ids": ["running"],
+        "failed_ids": ["failed"],
+    }
+
+    batch = mod._select_pending_batch(
+        predictions=predictions,
+        state=state,
+        batch_size=1,
+        force=True,
+    )
+
+    assert list(batch) == ["pending"]
+
+
+def test_pipeline_scoring_load_state_tracks_running_shards(tmp_path):
+    mod = _load_module("pipeline_scoring_ascend", "sh/pipeline_scoring_ascend.py")
+
+    shard_dir = tmp_path / "score" / "shards" / "shard-000003"
+    shard_dir.mkdir(parents=True)
+    (shard_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "shard_index": 3,
+                "status": "running",
+                "instance_ids": ["demo-running"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = mod.load_state(tmp_path / "score")
+
+    assert state["next_shard_index"] == 4
+    assert state["running_ids"] == ["demo-running"]
+    assert state["scored_ids"] == []
+    assert state["failed_ids"] == []
+
+
 def test_formal_remote_infer_can_enable_pipeline_scoring():
     script_text = (ROOT / "sh/run_sweagent_formal_remote_infer.sh").read_text(
         encoding="utf-8"
     )
 
     assert "PIPELINE_SCORING=${PIPELINE_SCORING:-0}" in script_text
+    assert "PIPELINE_SCORE_MAX_CONCURRENT_SHARDS=${PIPELINE_SCORE_MAX_CONCURRENT_SHARDS:-1}" in script_text
     assert "run_pipeline_scoring_ascend.sh" in script_text
+    assert 'MAX_CONCURRENT_SHARDS="${PIPELINE_SCORE_MAX_CONCURRENT_SHARDS}"' in script_text
     assert "waiting for pipeline scorer to drain final predictions" in script_text
 
 
@@ -228,6 +279,8 @@ def test_pipeline_scoring_wrapper_uses_swe_sandbox_python_for_merge():
 
     assert "PYTHON_BIN=${PYTHON_BIN:-${MINIFORGE_ROOT}/envs/${RUN_ENV_NAME}/bin/python}" in script_text
     assert '--python-bin "${PYTHON_BIN}"' in script_text
+    assert "MAX_CONCURRENT_SHARDS=${MAX_CONCURRENT_SHARDS:-1}" in script_text
+    assert '--max-concurrent-shards "${MAX_CONCURRENT_SHARDS}"' in script_text
     assert "MERGE_ONLY=${MERGE_ONLY:-0}" in script_text
     assert "args+=(--merge-only)" in script_text
 

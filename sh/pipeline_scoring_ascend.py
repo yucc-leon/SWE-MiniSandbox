@@ -82,6 +82,7 @@ def _empty_state() -> dict[str, Any]:
     return {
         "next_shard_index": 0,
         "scored_ids": [],
+        "running_ids": [],
         "failed_ids": [],
         "shards": [],
     }
@@ -96,6 +97,7 @@ def load_state(score_runtime_root: Path) -> dict[str, Any]:
             state.update(loaded)
 
     scored_ids = set(str(instance_id) for instance_id in state.get("scored_ids", []))
+    running_ids = set(str(instance_id) for instance_id in state.get("running_ids", []))
     failed_ids = set(str(instance_id) for instance_id in state.get("failed_ids", []))
     next_shard_index = int(state.get("next_shard_index") or 0)
     shards: list[dict[str, Any]] = []
@@ -113,11 +115,14 @@ def load_state(score_runtime_root: Path) -> dict[str, Any]:
         shard_ids = [str(instance_id) for instance_id in metadata.get("instance_ids", [])]
         if metadata.get("status") == "completed":
             scored_ids.update(shard_ids)
+        elif metadata.get("status") == "running":
+            running_ids.update(shard_ids)
         elif metadata.get("status") == "failed":
             failed_ids.update(shard_ids)
 
     state["next_shard_index"] = next_shard_index
     state["scored_ids"] = sorted(scored_ids)
+    state["running_ids"] = sorted(running_ids - scored_ids - failed_ids)
     state["failed_ids"] = sorted(failed_ids)
     state["shards"] = shards
     return state
@@ -170,12 +175,12 @@ def write_failed_shard_summary(score_runtime_root: Path) -> dict[str, Any]:
     return summary
 
 
-def run_scoring_shard(
+def _prepare_scoring_shard(
     *,
     args: argparse.Namespace,
     shard_index: int,
     shard_predictions: dict[str, dict[str, Any]],
-) -> tuple[int, Path]:
+) -> tuple[list[str], dict[str, str], Path, Path, dict[str, Any]]:
     instance_ids = sorted(shard_predictions)
     shard_root = args.score_runtime_root / "shards" / f"shard-{shard_index:06d}"
     shard_root.mkdir(parents=True, exist_ok=True)
@@ -214,6 +219,25 @@ def run_scoring_shard(
     )
 
     command = ["bash", str(ROOT_DIR / "sh" / "run_swebench_scoring_ascend.sh")]
+    return command, env, shard_root, shard_log_path, metadata
+
+
+def _finish_scoring_shard(*, metadata: dict[str, Any], metadata_path: Path, returncode: int) -> None:
+    metadata["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    metadata["returncode"] = returncode
+    metadata["status"] = "completed" if returncode == 0 else "failed"
+    _json_dump(metadata_path, metadata)
+
+
+def run_scoring_shard(
+    *,
+    args: argparse.Namespace,
+    shard_index: int,
+    shard_predictions: dict[str, dict[str, Any]],
+) -> tuple[int, Path]:
+    command, env, shard_root, shard_log_path, metadata = _prepare_scoring_shard(
+        args=args, shard_index=shard_index, shard_predictions=shard_predictions
+    )
     with shard_log_path.open("ab") as log_file:
         log_file.write(
             (
@@ -223,11 +247,58 @@ def run_scoring_shard(
         )
         completed = subprocess.run(command, cwd=ROOT_DIR, env=env, stdout=log_file, stderr=log_file)
 
-    metadata["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    metadata["returncode"] = completed.returncode
-    metadata["status"] = "completed" if completed.returncode == 0 else "failed"
-    _json_dump(metadata_path, metadata)
+    _finish_scoring_shard(
+        metadata=metadata,
+        metadata_path=shard_root / "metadata.json",
+        returncode=completed.returncode,
+    )
     return completed.returncode, shard_root
+
+
+def start_scoring_shard(
+    *,
+    args: argparse.Namespace,
+    shard_index: int,
+    shard_predictions: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    command, env, shard_root, shard_log_path, metadata = _prepare_scoring_shard(
+        args=args, shard_index=shard_index, shard_predictions=shard_predictions
+    )
+    log_file = shard_log_path.open("ab")
+    log_file.write(
+        (
+            f"[pipeline-scoring] command={' '.join(command)}\n"
+            f"[pipeline-scoring] ids={','.join(metadata['instance_ids'])}\n"
+        ).encode("utf-8")
+    )
+    log_file.flush()
+    process = subprocess.Popen(command, cwd=ROOT_DIR, env=env, stdout=log_file, stderr=log_file)
+    return {
+        "process": process,
+        "log_file": log_file,
+        "shard_root": shard_root,
+        "metadata": metadata,
+    }
+
+
+def poll_scoring_shards(active_shards: list[dict[str, Any]]) -> bool:
+    completed_any = False
+    still_active: list[dict[str, Any]] = []
+    for shard in active_shards:
+        process = shard["process"]
+        returncode = process.poll()
+        if returncode is None:
+            still_active.append(shard)
+            continue
+        completed_any = True
+        shard["log_file"].close()
+        _finish_scoring_shard(
+            metadata=shard["metadata"],
+            metadata_path=shard["shard_root"] / "metadata.json",
+            returncode=returncode,
+        )
+    active_shards[:] = still_active
+    return completed_any
 
 
 def merge_pipeline_results(
@@ -284,11 +355,14 @@ def _select_pending_batch(
     force: bool,
 ) -> dict[str, dict[str, Any]]:
     scored_ids = set(str(instance_id) for instance_id in state.get("scored_ids", []))
+    running_ids = set(str(instance_id) for instance_id in state.get("running_ids", []))
     failed_ids = set(str(instance_id) for instance_id in state.get("failed_ids", []))
     pending_ids = [
         instance_id
         for instance_id in sorted(predictions)
-        if instance_id not in scored_ids and instance_id not in failed_ids
+        if instance_id not in scored_ids
+        and instance_id not in running_ids
+        and instance_id not in failed_ids
     ]
     if not force and len(pending_ids) < batch_size:
         return {}
@@ -351,8 +425,21 @@ def run_watch(args: argparse.Namespace) -> int:
         return 0
 
     shards_started = 0
+    active_shards: list[dict[str, Any]] = []
     while True:
+        completed_any = poll_scoring_shards(active_shards)
+        if completed_any:
+            predictions = discover_predictions(
+                args.eval_runtime_root, stable_seconds=args.stable_seconds
+            )
+            if args.final_predictions_path and args.final_predictions_path.is_file():
+                predictions.update(load_predictions(args.final_predictions_path))
+            merge_pipeline_results(args=args, predictions=predictions)
+
         if (args.score_runtime_root / "STOP").exists():
+            for shard in active_shards:
+                shard["process"].terminate()
+                shard["log_file"].close()
             predictions = discover_predictions(
                 args.eval_runtime_root, stable_seconds=args.stable_seconds
             )
@@ -368,15 +455,59 @@ def run_watch(args: argparse.Namespace) -> int:
             return 0
 
         final_available = bool(args.final_predictions_path and args.final_predictions_path.is_file())
-        ran_shard = run_once(args, force=final_available or args.once)
+        ran_shard = False
+        if args.max_concurrent_shards <= 1:
+            ran_shard = run_once(args, force=final_available or args.once)
+        else:
+            while len(active_shards) < args.max_concurrent_shards:
+                state = load_state(args.score_runtime_root)
+                predictions = discover_predictions(
+                    args.eval_runtime_root, stable_seconds=args.stable_seconds
+                )
+                if args.final_predictions_path and args.final_predictions_path.is_file():
+                    predictions.update(load_predictions(args.final_predictions_path))
+                batch = _select_pending_batch(
+                    predictions=predictions,
+                    state=state,
+                    batch_size=args.batch_size,
+                    force=final_available or args.once,
+                )
+                if not batch:
+                    break
+                shard_index = int(state.get("next_shard_index") or 0)
+                active_shards.append(
+                    start_scoring_shard(
+                        args=args,
+                        shard_index=shard_index,
+                        shard_predictions=batch,
+                    )
+                )
+                state = load_state(args.score_runtime_root)
+                state["next_shard_index"] = max(
+                    int(state.get("next_shard_index") or 0), shard_index + 1
+                )
+                save_state(args.score_runtime_root, state)
+                ran_shard = True
+                shards_started += 1
+                if args.max_shards is not None and shards_started >= args.max_shards:
+                    break
         if ran_shard:
-            shards_started += 1
             if args.max_shards is not None and shards_started >= args.max_shards:
+                while active_shards:
+                    completed_any = poll_scoring_shards(active_shards)
+                    if completed_any:
+                        predictions = discover_predictions(
+                            args.eval_runtime_root, stable_seconds=args.stable_seconds
+                        )
+                        if args.final_predictions_path and args.final_predictions_path.is_file():
+                            predictions.update(load_predictions(args.final_predictions_path))
+                        merge_pipeline_results(args=args, predictions=predictions)
+                    time.sleep(min(args.poll_seconds, 5))
                 print(f"[pipeline-scoring] max_shards={args.max_shards} reached")
                 return 0
             if args.once:
                 continue
-        elif args.once:
+        elif args.once and not active_shards:
             return 0
 
         state = load_state(args.score_runtime_root)
@@ -391,7 +522,7 @@ def run_watch(args: argparse.Namespace) -> int:
             batch_size=1,
             force=True,
         )
-        if final_available and not pending:
+        if final_available and not pending and not active_shards:
             merge_pipeline_results(args=args, predictions=predictions)
             summary = write_failed_shard_summary(args.score_runtime_root)
             if summary["failed_shard_count"]:
@@ -444,6 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--merge-only", action="store_true", help="Only merge existing completed shards.")
     parser.add_argument("--once", action="store_true", help="Drain currently available predictions, then exit.")
     parser.add_argument("--max-shards", type=int, default=None)
+    parser.add_argument("--max-concurrent-shards", type=int, default=1)
     return parser
 
 
@@ -462,6 +594,8 @@ def main() -> int:
         parser.error("--batch-size must be >= 1")
     if args.num_workers < 1:
         parser.error("--num-workers must be >= 1")
+    if args.max_concurrent_shards < 1:
+        parser.error("--max-concurrent-shards must be >= 1")
     return run_watch(args)
 
 

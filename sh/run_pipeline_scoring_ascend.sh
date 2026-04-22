@@ -16,6 +16,7 @@ INSTANCE_FILTER=${INSTANCE_FILTER:-.*}
 INSTANCE_SLICE=${INSTANCE_SLICE:-:500}
 NUM_WORKERS=${NUM_WORKERS:-2}
 BATCH_SIZE=${BATCH_SIZE:-4}
+MAX_CONCURRENT_SHARDS=${MAX_CONCURRENT_SHARDS:-1}
 POLL_SECONDS=${POLL_SECONDS:-60}
 STABLE_SECONDS=${STABLE_SECONDS:-5}
 PYTHON_BIN=${PYTHON_BIN:-${MINIFORGE_ROOT}/envs/${RUN_ENV_NAME}/bin/python}
@@ -39,6 +40,7 @@ args=(
   --instance-slice "${INSTANCE_SLICE}"
   --num-workers "${NUM_WORKERS}"
   --batch-size "${BATCH_SIZE}"
+  --max-concurrent-shards "${MAX_CONCURRENT_SHARDS}"
   --poll-seconds "${POLL_SECONDS}"
   --stable-seconds "${STABLE_SECONDS}"
   --python-bin "${PYTHON_BIN}"

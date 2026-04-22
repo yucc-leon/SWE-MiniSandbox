@@ -107,6 +107,23 @@ bash sh/require_chroot_training.sh
 3. 对正式分数使用 scoring `results.json`，不要用 generation 本地 reward summary。
 4. 监控 `error_instances`、failed shard、empty patch、submitted rate。
 
+Pipeline scoring 吞吐调优：
+
+- `PIPELINE_SCORE_BATCH_SIZE`: 每个 scoring shard 包含多少实例。
+- `PIPELINE_SCORE_NUM_WORKERS`: 每个 shard 内的 SWE-agent `run-batch` worker 数。
+- `PIPELINE_SCORE_MAX_CONCURRENT_SHARDS`: 同时运行多少个 scoring shard。
+- 有效评分并发约等于 `PIPELINE_SCORE_NUM_WORKERS * PIPELINE_SCORE_MAX_CONCURRENT_SHARDS`。
+
+在 96 CPU core 的机器上，可以先试：
+
+```bash
+PIPELINE_SCORE_BATCH_SIZE=8
+PIPELINE_SCORE_NUM_WORKERS=4
+PIPELINE_SCORE_MAX_CONCURRENT_SHARDS=2
+```
+
+如果 load、I/O、venv cache 都稳定，再逐步提高到 `8 * 4 = 32` 或类似规模。不要一开始直接拉满，因为 scoring 不是纯 CPU，环境构建和测试 I/O 也会争用。
+
 训练:
 
 1. 先运行 `bash sh/require_chroot_training.sh`。
