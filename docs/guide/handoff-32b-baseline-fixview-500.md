@@ -1,4 +1,4 @@
-# Resume 32B Baseline Fixview 500 Evaluation
+# Handoff 32B Baseline Fixview 500 Evaluation
 
 This note records the local CPU-side state needed to resume the in-progress
 SWE-agent-LM 32B evaluation after a machine reboot. The remote NPU vLLM server
