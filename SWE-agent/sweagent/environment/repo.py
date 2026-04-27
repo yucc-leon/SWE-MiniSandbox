@@ -27,6 +27,13 @@ def _cache_repo_dir_from_archive(archive_path: str) -> str:
     stem = archive.name[:-4] if archive.name.endswith(".tar") else archive.stem
     return str(archive.with_name(f"{stem}.repo"))
 
+
+def _find_named_ancestor(path: Path, name: str) -> Path | None:
+    for parent in (path, *path.parents):
+        if parent.name == name:
+            return parent
+    return None
+
 class Repo(Protocol):
     """Protocol for repository configurations."""
     git_folder: str
@@ -329,6 +336,22 @@ class GithubRepoRetryConfig(BaseModel):
                 deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",deployment.sandbox_path('/testbed/build'))
             return True
 
+        if local_path is not None and not deployment._config.use_chroot:
+            target_repo_dir = os.path.join(deployment.root_dir, self.git_folder)
+            alternate_repo_dir = self._find_alternate_local_repo_cache(local_path)
+            if alternate_repo_dir:
+                logger.warning(
+                    "Using alternate local repo cache for %s@%s from %s",
+                    self.git_folder,
+                    self.base_commit[:12],
+                    alternate_repo_dir,
+                )
+                self._clone_from_local_cache(alternate_repo_dir, target_repo_dir)
+                if deployment.ds['repo']=='matplotlib/matplotlib':
+                    deployment.extract_freetype_tarball(f"{zip_dir}/freetype-2.6.1.tar.gz",deployment.sandbox_path('/testbed/build'))
+                    deployment.extract_freetype_tarball(f"{zip_dir}/qhull-2020-src-8.0.2.tgz",deployment.sandbox_path('/testbed/build'))
+                return True
+
 
         base_commit = self.base_commit
         github_token = os.getenv("GITHUB_TOKEN", "")
@@ -518,6 +541,55 @@ class GithubRepoRetryConfig(BaseModel):
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
         self._run_local_git(target_repo_dir, "clean", "-fdq")
+
+    def _repo_cache_has_commit(self, repo_dir: str) -> bool:
+        try:
+            self._run_local_git(repo_dir, "cat-file", "-e", f"{self.base_commit}^{{commit}}")
+        except Exception:
+            return False
+        return True
+
+    def _find_alternate_local_repo_cache(self, archive_path: str) -> str:
+        archive = Path(archive_path)
+        gitcache_root = _find_named_ancestor(archive, "gitcache")
+        if gitcache_root is None:
+            return ""
+
+        repo_version_dir = archive.parent.parent
+        candidate_paths: list[Path] = []
+
+        # Same gitcache root, same repo/version, different instance.
+        candidate_paths.extend(sorted(repo_version_dir.glob("*/testbed.repo")))
+        candidate_paths.extend(sorted(repo_version_dir.glob("*/testbed.tar")))
+
+        runtime_root = gitcache_root.parent.parent
+        relative_repo_version = repo_version_dir.relative_to(gitcache_root)
+        if runtime_root.exists():
+            for other_gitcache in sorted(runtime_root.glob("*/gitcache")):
+                if other_gitcache == gitcache_root:
+                    continue
+                other_repo_version = other_gitcache / relative_repo_version
+                candidate_paths.extend(sorted(other_repo_version.glob("*/testbed.repo")))
+                candidate_paths.extend(sorted(other_repo_version.glob("*/testbed.tar")))
+
+        seen: set[str] = set()
+        for candidate in candidate_paths:
+            candidate_str = str(candidate)
+            if candidate_str == archive_path or candidate_str in seen:
+                continue
+            seen.add(candidate_str)
+            if candidate.is_dir():
+                repo_dir = candidate
+            elif candidate.is_file():
+                try:
+                    repo_dir = Path(self._ensure_local_repo_cache(str(candidate)))
+                except Exception:
+                    continue
+            else:
+                continue
+            if self._repo_cache_has_commit(str(repo_dir)):
+                return str(repo_dir)
+        return ""
 
     def _resolve_hidden_ref(self, url: str, commit: str) -> str:
         out = subprocess.run(

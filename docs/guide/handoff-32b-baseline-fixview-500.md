@@ -4,6 +4,10 @@ This note records the local CPU-side state needed to resume the in-progress
 SWE-agent-LM 32B evaluation after a machine reboot. The remote NPU vLLM server
 is expected to remain available.
 
+Final closure for this run is recorded separately in
+`docs/guide/handoff-32b-baseline-fixview-500-followup.md`. This handoff should
+be treated as historical resume context, not the current live status.
+
 ## New-Agent Handoff Checklist
 
 If you are a fresh agent with no conversation history, do this first:

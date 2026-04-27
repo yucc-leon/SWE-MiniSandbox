@@ -96,9 +96,13 @@ def load_state(score_runtime_root: Path) -> dict[str, Any]:
         if isinstance(loaded, dict):
             state.update(loaded)
 
-    scored_ids = set(str(instance_id) for instance_id in state.get("scored_ids", []))
-    running_ids = set(str(instance_id) for instance_id in state.get("running_ids", []))
-    failed_ids = set(str(instance_id) for instance_id in state.get("failed_ids", []))
+    # Recompute shard-derived state from metadata on every load.
+    # Persisted running/scored/failed IDs can go stale across crashes or manual
+    # metadata repair, which would otherwise cause pending instances to be
+    # skipped forever.
+    scored_ids: set[str] = set()
+    running_ids: set[str] = set()
+    failed_ids: set[str] = set()
     next_shard_index = int(state.get("next_shard_index") or 0)
     shards: list[dict[str, Any]] = []
 
@@ -248,7 +252,7 @@ def run_scoring_shard(
         log_file.write(
             (
                 f"[pipeline-scoring] command={' '.join(command)}\n"
-                f"[pipeline-scoring] ids={','.join(instance_ids)}\n"
+                f"[pipeline-scoring] ids={','.join(metadata['instance_ids'])}\n"
             ).encode("utf-8")
         )
         completed = subprocess.run(command, cwd=ROOT_DIR, env=env, stdout=log_file, stderr=log_file)

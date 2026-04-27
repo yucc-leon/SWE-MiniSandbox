@@ -183,6 +183,9 @@ class BashSession(Session):
             return ""
         return _strip_control_chars(output)
 
+    def _exit_code_marker(self) -> str:
+        return f"__SWE_EXITCODE_{self._UNIQUE_STRING}__"
+
     async def interrupt(self, action: BashInterruptAction) -> BashObservation:
         """Interrupt the session."""
         output = ""
@@ -321,22 +324,26 @@ class BashSession(Session):
             return BashObservation(output=output, exit_code=None, expect_string=matched_expect_string)
 
         try:
-            _exit_code_prefix = "EXITCODESTART"
-            _exit_code_suffix = "EXITCODEEND"
-            self.shell.sendline(f"\necho {_exit_code_prefix}$?{_exit_code_suffix}")
+            exit_code_marker = self._exit_code_marker()
+            exit_code_command = f"printf '{exit_code_marker}%s\\n' $?"
+            self.shell.sendline(f"\n{exit_code_command}")
+            exit_code_pattern = re.compile(rf"{re.escape(exit_code_marker)}([0-9]+)")
             try:
-                self.shell.expect(_exit_code_suffix, timeout=1)
+                self.shell.expect(exit_code_pattern, timeout=1)
             except pexpect.TIMEOUT:
                 msg = "timeout while getting exit code"
                 raise NoExitCodeError(msg)
             exit_code_raw: str = _strip_control_chars(self.shell.before)  # type: ignore
-            exit_code = re.findall(f"{_exit_code_prefix}([0-9]+)", exit_code_raw)
-            if len(exit_code) != 1:
-                msg = f"failed to parse exit code from output {exit_code_raw!r} (command: {action.command!r}, matches: {exit_code})"
+            exit_code_match = exit_code_pattern.search(_strip_control_chars(self.shell.after))  # type: ignore[arg-type]
+            if exit_code_match is None:
+                msg = (
+                    f"failed to parse exit code from output {exit_code_raw!r} "
+                    f"(command: {action.command!r}, after: {self.shell.after!r})"
+                )
                 raise NoExitCodeError(msg)
-            output += exit_code_raw.split(_exit_code_prefix)[0]
-            exit_code = int(exit_code[0])
-            # We get at least one more PS1 here.
+            exit_code = int(exit_code_match.group(1))
+            output += exit_code_raw
+            output = output.replace(exit_code_command, "")
             try:
                 self.shell.expect(self._ps1, timeout=0.1)
             except pexpect.TIMEOUT:

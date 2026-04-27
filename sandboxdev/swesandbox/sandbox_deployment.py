@@ -23,7 +23,7 @@ import os
 import shutil
 from swebench.harness.grading import get_eval_tests_report, get_resolution_status
 from .swebench_utils.test_spec import get_test_specs_from_dataset,get_test_specs_from_ds
-from swerex.runtime.abstract import BashAction
+from swerex.runtime.abstract import BashAction, CloseBashSessionRequest
 from r2egym.swesmith.utils import get_test_command,get_install_commands
 from .swe_bench_instance_map import instance_map,instance_to_skip
 import time
@@ -62,6 +62,11 @@ from swesandbox.customer_instance import custom_install_cmd,custom_test_cmd
 from swesandbox.swebench_grading_overrides import apply_local_swebench_report_overrides
 from swesandbox.swebench_grading_overrides import maybe_relax_pytest_minversion
 from swesandbox.swebench_grading_overrides import should_skip_swebench_instance
+from swesandbox.install_script import (
+    build_run_tests_prepare_command,
+    resolve_wheelhouse_find_links,
+    strip_nochroot_system_package_commands,
+)
 def get_install_commands_wrapper(ds):
     instance_id=ds.get('instance_id','default')
     custom_install = custom_install_cmd(instance_id)
@@ -79,6 +84,8 @@ def get_test_commands_wrapper(ds):
 
 
 __all__ = ["SandboxDeployment", "SandboxDeploymentConfig"]
+
+
 def get_deployment_from_config(config,ds,bundles):
     if not isinstance(config,SandboxDeploymentConfig):
         raise ValueError("config must be an instance of SandboxDeploymentConfig")
@@ -662,30 +669,29 @@ class SandboxDeployment(AbstractDeployment):
             '''unset PIP_CONSTRAINT''',
             '''export USER=${USER:-$(whoami)}''',
             "export PS1='SHELLPS1PREFIX'",
-            "mkdir -p /_pip_cache"
+            "mkdir -p /_pip_cache",
+            "export PIP_CACHE_DIR=/_pip_cache",
+            "export PIP_DISABLE_PIP_VERSION_CHECK=1",
+            "export PIP_NO_INPUT=1",
+            "export PIP_DEFAULT_TIMEOUT=15",
+            "export PIP_RETRIES=1",
             # 'unset CONDA_BUILD_SYSROOT',
             # 'unset _CONDA_PYTHON_SYSCONFIGDATA_NAME',
             # 'export CONDA_BUILD=0',
             # '''export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v 'compiler_compat' | paste -sd ':' -)"'''
             ]
-        if self._config.wheelhouse:
-            py_version = str(self.py_version)
-            short_version = py_version.replace(".", "")
-            candidates = [
-                os.path.join(self._config.wheelhouse, py_version),
-                os.path.join(self._config.wheelhouse, f"py{short_version}"),
-                os.path.join(self._config.wheelhouse, f"python{py_version}"),
-                self._config.wheelhouse,
-            ]
-            wheelhouse_dir = next((path for path in candidates if os.path.isdir(path)), "")
-            if wheelhouse_dir:
-                cmd_list.extend(
-                    [
-                        f'''export PIP_FIND_LINKS="{wheelhouse_dir}"''',
-                        '''export PIP_PREFER_BINARY=1''',
-                    ]
-                )
+        wheelhouse_dir = self._resolve_wheelhouse_dir()
+        if wheelhouse_dir:
+            cmd_list.extend(
+                [
+                    f'''export PIP_FIND_LINKS="{wheelhouse_dir}"''',
+                    '''export PIP_PREFER_BINARY=1''',
+                ]
+            )
         res=asyncio.run(self.runtime.run_in_session(BashAction(command="\n".join(cmd_list), timeout=12, check='raise')))
+
+    def _resolve_wheelhouse_dir(self) -> str:
+        return resolve_wheelhouse_find_links(self._config.wheelhouse, str(self.py_version))
 
     def build_env(self,env):
         """Builds the virtual environment for the sandbox deployment.
@@ -931,6 +937,7 @@ class SandboxDeployment(AbstractDeployment):
                     install_script_content,
                     flags=re.MULTILINE,
                 )
+                install_script_content = strip_nochroot_system_package_commands(install_script_content)
         elif self._config.data_type=="swesmith":
             install_cmd= get_install_commands_wrapper(self.ds)
             install_script_content = "\n".join(
@@ -1079,7 +1086,13 @@ class SandboxDeployment(AbstractDeployment):
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(eval_script_content)
         run_tests_path = self.sandbox_path("/run_tests.sh")
-        asyncio.run(self.runtime.run_in_session(BashAction(command=f"chmod +x {run_tests_path} && python3 -m pip install chardet", timeout=120, check='raise')))
+        prepare_cmd = build_run_tests_prepare_command(
+            run_tests_path,
+            python_cmd="python3",
+            use_chroot=self._config.use_chroot,
+            wheelhouse_dir=self._resolve_wheelhouse_dir(),
+        )
+        asyncio.run(self.runtime.run_in_session(BashAction(command=prepare_cmd, timeout=120, check='raise')))
     def setup_env_swesmith(self):
         """Sets up the evaluation environment for Swesmith datasets."""
         test_command, _ = get_test_commands_wrapper(self.ds)
@@ -1112,7 +1125,13 @@ class SandboxDeployment(AbstractDeployment):
 
         # self.run_command("chmod +x /run_tests.sh && python -m pip install chardet")
         run_tests_path = self.sandbox_path("/run_tests.sh")
-        asyncio.run(self.runtime.run_in_session(BashAction(command=f"chmod +x {run_tests_path} && python -m pip install chardet", timeout=120, check='raise')))
+        prepare_cmd = build_run_tests_prepare_command(
+            run_tests_path,
+            python_cmd="python",
+            use_chroot=self._config.use_chroot,
+            wheelhouse_dir=self._resolve_wheelhouse_dir(),
+        )
+        asyncio.run(self.runtime.run_in_session(BashAction(command=prepare_cmd, timeout=120, check='raise')))
 
 
 
@@ -1320,6 +1339,8 @@ class SandboxDeployment(AbstractDeployment):
                 original_reward,fail2pass_dic,pass2pass_dic,output=self._calculate_reward_swesmith(timeout=timeout)
             except Exception as e:
                 self.logger.error(f"Error in calculating reward swesmith: {e}")
+                with contextlib.suppress(Exception):
+                    asyncio.run(self.runtime.close_session(CloseBashSessionRequest()))
                 return 0.0,{},{},''
             #delte run_tests.sh
             script_path = Path(self.root_dir) / "run_tests.sh"
@@ -1332,6 +1353,8 @@ class SandboxDeployment(AbstractDeployment):
                 success,f2p,p2p,output=self._calculate_reward_swebench(timeout=timeout)
             except Exception as e:
                 self.logger.error(f"Error in calculating reward swebench: {e}")
+                with contextlib.suppress(Exception):
+                    asyncio.run(self.runtime.close_session(CloseBashSessionRequest()))
                 return 0.0,{},{},''
             #delete run_tests.sh
             script_path = Path(self.root_dir) / "run_tests.sh"

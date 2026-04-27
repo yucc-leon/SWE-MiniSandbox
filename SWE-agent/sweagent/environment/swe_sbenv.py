@@ -7,6 +7,7 @@ import shlex
 from pathlib import PurePath
 from typing import Literal, Self
 
+from swerex.exceptions import SessionDoesNotExistError, SessionNotInitializedError
 from pydantic import BaseModel, ConfigDict, Field
 from swerex.deployment.abstract import AbstractDeployment
 from swerex.deployment.config import DeploymentConfig, DockerDeploymentConfig, get_deployment
@@ -289,21 +290,20 @@ class SWEsbEnv:
         time_data={"session_duration": session_end_time - session_create_time,"session_start_time":session_create_time,"session_end_time":session_end_time}
 
         env_setup_time = time.time()
-        env_defaults = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PIP_PROGRESS_BAR": "off", "PAGER": "cat"}
+        env_defaults = self._default_shell_env()
         # Under heavier no-chroot parallelism, we occasionally see the interactive
         # shell exit immediately after create_session() but before the first command.
         # Recreate the default session once before giving up so transient EOFs do
         # not turn into permanent per-instance failures.
         for attempt in range(2 if not self.deployment._config.use_chroot else 1):
             try:
-                self.set_env_variables(env_defaults)
+                self._apply_default_shell_env(env_defaults)
                 break
             except Exception:
                 if attempt >= 1 or self.deployment._config.use_chroot:
                     raise
                 self.logger.warning("Default shell died during env bootstrap, recreating session once")
-                self._close_default_session()
-                self._create_default_session(startup_cmd)
+                self._recover_default_session(startup_cmd=startup_cmd)
         env_setup_end_time = time.time()
         time_data["env_setup_duration"]=env_setup_end_time - env_setup_time
         self.logger.info("Environment Initialized")
@@ -324,6 +324,33 @@ class SWEsbEnv:
     def _close_default_session(self) -> None:
         with contextlib.suppress(Exception):
             asyncio.run(self.deployment.runtime.close_session(CloseBashSessionRequest()))
+
+    def _default_shell_env(self) -> dict[str, str]:
+        return {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PIP_PROGRESS_BAR": "off", "PAGER": "cat"}
+
+    def _apply_default_shell_env(self, env_variables: dict[str, str]) -> None:
+        if not env_variables:
+            return
+        _env_setters = [f"export {k}={shlex.quote(str(v))}" for k, v in env_variables.items()]
+        command = " && ".join(_env_setters)
+        asyncio.run(self.deployment.runtime.run_in_session(BashAction(command=command, timeout=25, check="raise")))
+
+    def _recover_default_session(self, *, startup_cmd: str | None = None) -> None:
+        if startup_cmd is None:
+            startup_cmd = self.deployment.startup()
+        self._close_default_session()
+        self._create_default_session(startup_cmd)
+        self._apply_default_shell_env(self._default_shell_env())
+        install_commands = getattr(self.deployment, "_install_commands", None)
+        if callable(install_commands):
+            with contextlib.suppress(Exception):
+                install_commands()
+
+    @staticmethod
+    def _is_default_session_lost_error(exc: Exception) -> bool:
+        if isinstance(exc, (SessionNotInitializedError, SessionDoesNotExistError)):
+            return True
+        return "shell not initialized" in str(exc).lower()
     def interrupt_session(self):
         self.logger.info("Interrupting session")
         asyncio.run(self.deployment.runtime.run_in_session(BashInterruptAction()))
@@ -354,10 +381,16 @@ class SWEsbEnv:
         if root_dir not in input:
             input = self.deployment._rewrite_script_paths(input)
         self.logger.log(logging.TRACE, "Input:\n%s", input)  # type: ignore
-        rex_check = "silent" if check else "ignore"
-        r = asyncio.run(
-            self.deployment.runtime.run_in_session(BashAction(command=input, timeout=timeout, check=rex_check))
-        )
+        rex_check = "ignore" if check == "ignore" else "silent"
+        action = BashAction(command=input, timeout=timeout, check=rex_check)
+        try:
+            r = asyncio.run(self.deployment.runtime.run_in_session(action))
+        except Exception as e:
+            if not self._is_default_session_lost_error(e):
+                raise
+            self.logger.warning("Default shell unavailable during command execution, recreating session once")
+            self._recover_default_session()
+            r = asyncio.run(self.deployment.runtime.run_in_session(action))
         output ='\n'.join(r.output.split('\n')[:-1])
         output = self.deployment.rewrite_observation_paths(output)
 
@@ -397,7 +430,10 @@ class SWEsbEnv:
         """Calculate reward for the environment"""
         try:
             return self.deployment._calculate_reward(p2p=p2p,f2p=f2p)
-        except:
+        except Exception:
+            self.logger.warning("Reward calculation failed; recovering default shell before repository reset")
+            with contextlib.suppress(Exception):
+                self._recover_default_session()
             return 0.0,{},{},''
     def execute_command(
         self,

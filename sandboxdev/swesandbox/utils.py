@@ -304,11 +304,35 @@ import os
 class EvaluationError(Exception):
     pass
 
+def remove_binary_diffs(patch_text: str) -> str:
+    """Remove binary file diffs that cannot be applied from text patches."""
+    lines = patch_text.splitlines()
+    cleaned_lines: list[str] = []
+    block: list[str] = []
+    is_binary_block = False
+
+    for line in lines:
+        if line.startswith("diff --git "):
+            if block and not is_binary_block:
+                cleaned_lines.extend(block)
+            block = [line]
+            is_binary_block = False
+        elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+            is_binary_block = True
+            block.append(line)
+        else:
+            block.append(line)
+
+    if block and not is_binary_block:
+        cleaned_lines.extend(block)
+
+    return "\n".join(cleaned_lines) + ("\n" if patch_text.endswith("\n") else "")
+
 def apply_patch(sandbox_root,git_folder,patch_str,instance_id,reverse=False):
     #write the patch to a patch file under sandbox_root
     patch_file = os.path.join(sandbox_root, "temp_patch.diff")
     with open(patch_file, "w") as f:
-        f.write(patch_str)
+        f.write(remove_binary_diffs(patch_str))
     cwd=os.path.join(sandbox_root, git_folder)
     _apply_patch_local(instance_id, patch_file, cwd, reverse)
 def _apply_patch_local(instance_id: str, patch_file: str, cwd: str, reverse: bool = False):
@@ -362,5 +386,10 @@ def _apply_patch_local(instance_id: str, patch_file: str, cwd: str, reverse: boo
 
     if not apply_succeeded:
         os.remove(patch_file)
-        apply_failed_msg = f"Failed to apply patch for {instance_id} with all methods.\nLast command: {last_cmd}\nSTDERR:\n{last_stderr}"
+        apply_failed_msg = (
+            f"Failed to apply patch for {instance_id} with all methods.\n"
+            f"Last command: {last_cmd}\n"
+            f"STDOUT:\n{last_stdout}\n"
+            f"STDERR:\n{last_stderr}"
+        )
         raise EvaluationError(apply_failed_msg)
