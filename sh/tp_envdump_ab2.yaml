@@ -1,0 +1,51 @@
+name: envdump-ab2
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 86400
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src &&
+  export LITELLM_LOCAL_MODEL_COST_MAP=True SWE_RELINK_EDITABLE=1 TZ=UTC &&
+  SAMPLE=$ROOT/vendor/envdump_exp_sample_100.txt &&
+  HSH=$(python3 -c "print('|'.join(l.strip().rsplit('__',1)[1] for l in open('$SAMPLE') if l.strip()))") &&
+  N=$(python3 -c "print(sum(1 for l in open('$SAMPLE') if l.strip()))") &&
+  echo "[envdump-ab2] sample N=$N" &&
+  PA=$ROOT/vendor/swesmith-cache/envdump-baseline2 && rm -rf $PA && mkdir -p $PA &&
+  export SWESMITH_FULL_DEPS=0 SWESMITH_ENVDUMP=0 SWESMITH_SYSDEPS=0 SWESMITH_TZFIX=0 &&
+  echo "===== ARM A: BASELINE (bare pip install -e ., no fixes) =====" &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 12
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter ".*__($HSH)" --instances.slice ":$N"
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $PA/sandbox --instances.deployment.git_base_path $PA/gitcache --instances.deployment.shared_venv $PA/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $PA/out 2>&1 | tee $PA/run.log ;
+  python3 -c "import json,glob; P='$PA'; pr=[json.load(open(f)) for f in glob.glob(P+'/out/*/*.pred')]; g1=[p.get('instance_id') for p in pr if p.get('reward')==1]; open('$ROOT/vendor/envdump_baseline2_gold1.txt','w').write(chr(10).join(i for i in g1 if i)); print('[envdump-ab2] baseline gold->1 =', str(len(g1))+'/'+str(len(pr)))" ;
+  PB=$ROOT/vendor/swesmith-cache/envdump-envdump2 && rm -rf $PB && mkdir -p $PB &&
+  export SWESMITH_FULL_DEPS=0 SWESMITH_ENVDUMP=1 SWESMITH_ENVDUMP_MAP=$ROOT/vendor/envdump_freeze_map.json SWESMITH_SYSDEPS=1 SWESMITH_SYSDEPS_MAP=$ROOT/vendor/envdump_system_deps_map.json SWESMITH_TZFIX=1 &&
+  echo "===== ARM B: ENVDUMP + SYSDEPS(apt) + TZFIX(tzdata) =====" &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 12
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter ".*__($HSH)" --instances.slice ":$N"
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $PB/sandbox --instances.deployment.git_base_path $PB/gitcache --instances.deployment.shared_venv $PB/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $PB/out 2>&1 | tee $PB/run.log ;
+  python3 -c "import json,glob; P='$PB'; pr=[json.load(open(f)) for f in glob.glob(P+'/out/*/*.pred')]; g1=[p.get('instance_id') for p in pr if p.get('reward')==1]; open('$ROOT/vendor/envdump_envdump2_gold1.txt','w').write(chr(10).join(i for i in g1 if i)); print('[envdump-ab2] envdump+fixes gold->1 =', str(len(g1))+'/'+str(len(pr)))" ;
+  echo "===== FLIP ANALYSIS =====" &&
+  python3 -c "base=set(l.strip() for l in open('$ROOT/vendor/envdump_baseline2_gold1.txt') if l.strip()); ed=set(l.strip() for l in open('$ROOT/vendor/envdump_envdump2_gold1.txt') if l.strip()); tot=sum(1 for l in open('$SAMPLE') if l.strip()); flips=ed-base; regress=base-ed; print('[envdump-ab2] baseline gold->1: %d/%d = %.1f%%'%(len(base),tot,100.0*len(base)/tot)); print('[envdump-ab2] envdump+fixes gold->1: %d/%d = %.1f%%'%(len(ed),tot,100.0*len(ed)/tot)); print('[envdump-ab2] NEW flips: %d'%len(flips)); print('[envdump-ab2] regressions: %d'%len(regress)); [print('   regress:',i) for i in sorted(regress)]" 2>&1 | tee $ROOT/vendor/swesmith-cache/envdump_ab2_summary.txt

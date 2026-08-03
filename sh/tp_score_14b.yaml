@@ -1,0 +1,22 @@
+name: mswea-score-14b-100
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 1
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 21600
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  export CONFIG_PATH=/path/to/SWE-MiniSandbox/config/sweagent_score_ascend_chroot.yaml
+  PREDICTIONS_PATH=/path/to/SWE-MiniSandbox/.runtime/mswea-eval-qwen25-14b-chroot-100/output/preds.json
+  DATASET_DIR=/path/to/SWE-MiniSandbox/dataset/SWE-bench/SWE-bench_Verified/data
+  INSTANCE_SLICE=:100 NUM_WORKERS=8
+  GITCACHE_ROOT=/path/to/SWE-MiniSandbox/.runtime/mswea-eval-qwen25-14b-chroot-100/gitcache
+  SHARED_VENV_ROOT=/path/to/SWE-MiniSandbox/.runtime/mswea-eval-qwen25-14b-chroot-100/shared_venv
+  RUNTIME_ROOT=/path/to/SWE-MiniSandbox/.runtime/score-14b-100 &&
+  bash /path/to/SWE-MiniSandbox/sh/run_swebench_scoring_ascend.sh

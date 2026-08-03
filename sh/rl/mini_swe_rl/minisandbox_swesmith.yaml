@@ -1,0 +1,208 @@
+agent:
+  system_template: 'You are a helpful assistant that can interact multiple times with
+    a computer shell to solve programming tasks.
+
+    Your response must contain exactly ONE bash code block with ONE command (or commands
+    connected with && or ||).
+
+
+    Include a THOUGHT section before your command where you explain your reasoning
+    process.
+
+    Format your response as shown in <format_example>.
+
+
+    <format_example>
+
+    THOUGHT: Your reasoning and analysis here
+
+
+    ```mswea_bash_command
+
+    your_command_here
+
+    ```
+
+    </format_example>
+
+
+    Failure to follow these rules will cause your response to be rejected.
+
+    '
+  instance_template: "<pr_description>\nConsider the following PR description:\n{{task}}\n\
+    </pr_description>\n\n<instructions>\n# Task Instructions\n\n## Overview\n\nYou're\
+    \ a software engineer interacting continuously with a computer by submitting commands.\n\
+    You'll be helping implement necessary changes to meet requirements in the PR description.\n\
+    Your task is specifically to make changes to non-test files in the current directory\
+    \ in order to fix the issue described in the PR description in a way that is general\
+    \ and consistent with the codebase.\n\n<IMPORTANT>This is an interactive process\
+    \ where you will think and issue ONE command, see its result, then think and issue\
+    \ your next command.</IMPORTANT>\n\nFor each response:\n\n1. Include a THOUGHT\
+    \ section explaining your reasoning and what you're trying to accomplish\n2. Provide\
+    \ exactly ONE bash command to execute\n\n## Important Boundaries\n\n- MODIFY:\
+    \ Regular source code files in /testbed (this is the working directory for all\
+    \ your subsequent commands)\n- DO NOT MODIFY: Tests, configuration files (pyproject.toml,\
+    \ setup.cfg, etc.)\n\n## Recommended Workflow\n\n1. Analyze the codebase by finding\
+    \ and reading relevant files\n2. Create a script to reproduce the issue\n3. Edit\
+    \ the source code to resolve the issue\n4. Verify your fix works by running your\
+    \ script again\n5. Test edge cases to ensure your fix is robust\n\n## Command\
+    \ Execution Rules\n\nYou are operating in an environment where\n\n1. You write\
+    \ a single command\n2. The system executes that command in a subshell\n3. You\
+    \ see the result\n4. You write your next command\n\nEach response should include:\n\
+    \n1. A **THOUGHT** section where you explain your reasoning and plan\n2. A single\
+    \ bash code block with your command\n\nFormat your responses like demonstrated\
+    \ within the <format_example> block:\n\n<format_example>\nTHOUGHT: Here I explain\
+    \ my reasoning process, analysis of the current situation,\nand what I'm trying\
+    \ to accomplish with the command below.\n\n```mswea_bash_command\nyour_command_here\n\
+    ```\n</format_example>\n\nCommands must be specified in a single bash code block:\n\
+    \n```mswea_bash_command\nyour_command_here\n```\n\n**CRITICAL REQUIREMENTS:**\n\
+    \n- Your response SHOULD include a THOUGHT section explaining your reasoning\n\
+    - Your response MUST include EXACTLY ONE bash code block\n- This bash block MUST\
+    \ contain EXACTLY ONE command (or a set of commands connected with && or ||)\n\
+    - If you include zero or multiple bash blocks, or no command at all, YOUR RESPONSE\
+    \ WILL FAIL\n- Do NOT try to run multiple independent commands in separate blocks\
+    \ in one response\n- Directory or environment variable changes are not persistent.\
+    \ Every action is executed in a new subshell.\n- However, you can prefix any action\
+    \ with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment\
+    \ variables from files\n\nExample of a CORRECT response:\n<example_response>\n\
+    THOUGHT: I need to understand the structure of the repository first. Let me check\
+    \ what files are in the current directory to get a better understanding of the\
+    \ codebase.\n\n```mswea_bash_command\nls -la\n```\n</example_response>\n\nExample\
+    \ of an INCORRECT response:\n\n<example_response>\nTHOUGHT: I need to examine\
+    \ the codebase and then look at a specific file. I'll run multiple commands to\
+    \ do this.\n\n```mswea_bash_command\nls -la\n```\n\nNow I'll read the file:\n\n\
+    ```mswea_bash_command\ncat file.txt\n```\n</example_response>\n\nIf you need to\
+    \ run multiple commands, either:\n\n1. Combine them in one block using && or ||\n\
+    ```mswea_bash_command\ncommand1 && command2 || echo \"Error occurred\"\n```\n\n\
+    2. Wait for the first command to complete, see its output, then issue the next\
+    \ command in your following response.\n\n## Environment Details\n\n- You have\
+    \ a full Linux shell environment\n- Always use non-interactive flags (-y, -f)\
+    \ for commands\n- Avoid interactive tools like vi, nano, or any that require user\
+    \ input\n- You can use bash commands or invoke any tool that is available in the\
+    \ environment\n- You can also create new tools or scripts to help you with the\
+    \ task\n- If a tool isn't available, you can also install it\n\n## Submission\n\
+    \nMake your fix by EDITING THE SOURCE FILES IN PLACE in the working tree (with\
+    \ sed, by\nwriting the file, or any editor). The system captures your solution\
+    \ automatically as the\n`git diff` of the repository — you do NOT package, export,\
+    \ or submit a patch yourself.\n\n<IMPORTANT>\n- Leave your source edits IN PLACE\
+    \ in the working tree. Do NOT revert, stash, `git checkout`,\n  `git reset`, or\
+    \ undo them, and do NOT `git commit` them. The grader reads the live working-tree\
+    \ diff.\n- Do NOT create a patch file (no `git diff > patch.txt`) and do NOT try\
+    \ to submit patch text.\n- Reproduction scripts or helper tools you create are\
+    \ fine to leave around: put them OUTSIDE\n  the repo (e.g. in /tmp) or know that\
+    \ untracked new files are ignored by the capture. Only\n  your edits to EXISTING\
+    \ tracked source files become the solution.\n- Edit only the source files needed\
+    \ to fix the issue; do not modify the project's tests.\n</IMPORTANT>\n\nWhen (and\
+    \ only when) your edits are complete and you have verified the fix, submit with\
+    \ this\nEXACT command (nothing else on the line):\n\n```mswea_bash_command\necho\
+    \ COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\n\n<CRITICAL>\n- You CANNOT continue\
+    \ working (reading, editing, testing) in any way on this task after submitting.\n\
+    - Submit ONLY after your source edits are in place; submitting reverts nothing.\n\
+    </CRITICAL>\n</instructions>\n"
+  step_limit: 10
+  cost_limit: 3.0
+  action_observation_template: '<returncode>{{output.returncode}}</returncode>
+
+    {% if output.output | length < 10000 -%}
+
+    <output>
+
+    {{ output.output -}}
+
+    </output>
+
+    {%- else -%}
+
+    <warning>
+
+    The output of your last command was too long.
+
+    Please try a different command that produces less output.
+
+    If you''re looking at a file you can try use head, tail or sed to view a smaller
+    number of lines selectively.
+
+    If you''re using grep or find and it produced too much output, you can use a more
+    selective search pattern.
+
+    If you really need to see something from the full command''s output, you can redirect
+    output to a file and then search in that file.
+
+    </warning>
+
+    {%- set elided_chars = output.output | length - 10000 -%}
+
+    <output_head>
+
+    {{ output.output[:5000] }}
+
+    </output_head>
+
+    <elided_chars>
+
+    {{ elided_chars }} characters elided
+
+    </elided_chars>
+
+    <output_tail>
+
+    {{ output.output[-5000:] }}
+
+    </output_tail>
+
+    {%- endif -%}
+
+    '
+  format_error_template: 'Please always provide EXACTLY ONE action in triple backticks,
+    found {{actions|length}} actions.
+
+
+    Please format your action in triple backticks as shown in <response_example>.
+
+
+    <response_example>
+
+    Here are some thoughts about why you want to perform the action.
+
+
+    ```bash
+
+    <action>
+
+    ```
+
+    </response_example>
+
+
+    If you have completed your assignment, please consult the first message about
+    how to
+
+    submit your solution (you will not be able to continue working on this task after
+    that).
+
+    '
+model:
+  model_name: ''
+  model_kwargs:
+    drop_params: true
+    temperature: 1.0
+  model_class: litellm_textbased
+environment:
+  environment_class: minisandbox
+  cwd: /testbed
+  timeout: 120
+minisandbox:
+  eval_config_path: /path/to/SWE-MiniSandbox/config/swesmith_infer.yaml
+  instances_path: /path/to/SWE-MiniSandbox/dataset/SWE-smith
+  instances_split: train
+  instances_end: 59136
+  instances_slice: :100000
+  instances_filter: .*
+  root_base: /path/to/SWE-MiniSandbox/vendor/swesmith-cache/rl-run/sandbox
+  git_base_path: /path/to/SWE-MiniSandbox/vendor/swesmith-cache/rl-run/gitcache
+  shared_venv: /path/to/SWE-MiniSandbox/vendor/swesmith-cache/rl-run/shared_venv
+  wheelhouse: /path/to/SWE-MiniSandbox/vendor/minisandbox-wheelhouse
+  conda_env: /path/to/workspace/minisandbox-conda
+  tool_path: /path/to/SWE-MiniSandbox/SWE-agent/tools
+  use_chroot: false
+  output_dir: /path/to/SWE-MiniSandbox/vendor/swesmith-cache/rl-run/out

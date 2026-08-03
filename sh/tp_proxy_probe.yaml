@@ -1,0 +1,33 @@
+name: proxy-probe-pod
+type: common
+image: "346"
+dc: "19"
+cpus: 8
+ram: 32
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 1200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  PURL=$(cat vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  git config --global http.proxy "$PURL" &&
+  git config --global https.proxy "$PURL" &&
+  git config --global http.proxyAuthMethod basic &&
+  OUT=vendor/proxy_probe_result.txt && echo "PROBE_START" > $OUT &&
+  echo "=== curl 经代理到 github ===" >> $OUT &&
+  (timeout 20 curl -sS -o /dev/null -w "curl_github http=%{http_code} t=%{time_total}s\n" -x "$PURL" https://github.com 2>&1 || echo "curl_github FAIL") >> $OUT &&
+  REPOS="Suor__funcy.207a7810 adrienverge__yamllint.8513d9b9 PyCQA__flake8.cf1542ce arrow-py__arrow.1d70d009 bottlepy__bottle.a8dfef30 burnash__gspread.a8be3b96 HIPS__autograd.ac044f0d Project-MONAI__MONAI.a09c1f08 Cog-Creators__Red-DiscordBot.33e0eac7 benoitc__gunicorn.bacbf8aa" &&
+  OK=0; N=0 &&
+  for r in $REPOS; do
+  N=$((N+1)); rm -rf /tmp/pr$N;
+  T0=$(cat /proc/uptime | cut -d. -f1);
+  if timeout 120 git clone --depth 1 https://github.com/swesmith/$r /tmp/pr$N >/dev/null 2>&1; then OK=$((OK+1)); T1=$(cat /proc/uptime|cut -d. -f1); echo "OK   ${r}  $((T1-T0))s" >> $OUT; else echo "FAIL $r" >> $OUT; fi;
+  rm -rf /tmp/pr$N;
+  done &&
+  echo "PROXY_PROBE_RESULT ok=$OK/$N" >> $OUT &&
+  echo "PROXY_PROBE_RESULT ok=$OK/$N"

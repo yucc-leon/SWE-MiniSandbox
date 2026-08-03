@@ -1,0 +1,36 @@
+name: discrim-test
+type: common
+image: "346"
+dc: "19"
+cpus: 48
+ram: 384
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 14400
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True SWESMITH_FULL_DEPS=1 SWE_RELINK_EDITABLE=1 SWE_SANDBOX_SCORE_MODEL_PATCH=1 &&
+  HSH=$(python3 -c "print('|'.join(l.strip().rsplit('__',1)[1] for l in open('$ROOT/vendor/sft-data/discrim_ids.txt') if l.strip()))") &&
+  N=$(python3 -c "print(sum(1 for l in open('$ROOT/vendor/sft-data/discrim_ids.txt') if l.strip()))") &&
+  P=$ROOT/vendor/swesmith-cache/discrim && rm -rf $P && mkdir -p $P &&
+  run(){ python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 10
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter ".*__($HSH)" --instances.slice ":$N"
+  --instances.model_patch_file $2
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot false
+  --instances.deployment.root_base $P/sb_$1 --instances.deployment.git_base_path $P/gitcache --instances.deployment.shared_venv $P/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $P/out_$1; } ;
+  echo "=== WRONG (错配,应~全0) ===" && run wrong $ROOT/vendor/sft-data/discrim_wrong_patches.json 2>&1 | tail -1 ;
+  echo "=== REAL (真补丁,应部分1) ===" && run real $ROOT/vendor/sft-data/discrim_real_patches.json 2>&1 | tail -1 ;
+  python3 -c "import json;w=json.load(open('$P/out_wrong/preds.json'));r=json.load(open('$P/out_real/preds.json'));from collections import Counter;print('[discrim] WRONG错配 reward分布(应几乎全0):',dict(Counter(v.get('reward') for v in w.values())));print('[discrim] REAL真补丁 reward分布(应部分1部分0):',dict(Counter(v.get('reward') for v in r.values())))" | tee $P/discrim.log

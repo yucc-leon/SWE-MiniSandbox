@@ -1,0 +1,51 @@
+env_type: sandbox
+num_workers: 4
+output_dir: .runtime/ascend-score-baseline/output
+instances:
+  database: /path/to/SWE-bench_Verified/data
+  type: swe_bench
+  split: test
+  deployment:
+    root_base: .runtime/ascend-score-baseline/sandbox
+    git_base_path: .runtime/ascend-score-baseline/gitcache
+    data_type: swebench
+    tool_path: SWE-agent/tools
+    conda_env: /path/to/workspace/minisandbox-conda
+    abs_tool_path: /tools
+    shared_venv: .runtime/ascend-score-baseline/shared_venv
+    git_folder: testbed
+    eval_timeout: 300
+    use_chroot: false
+    apply_local_swebench_overrides: false
+    type: sandbox
+agent:
+  type: empty
+  pre_check: true
+  templates:
+    system_template: |-
+      You are a no-op evaluation agent. Do not make any tool calls.
+    instance_template: |-
+      {{problem_statement}}
+    next_step_template: |-
+      {{observation}}
+    next_step_no_output_template: |-
+      {{observation}}
+  tools:
+    bundles:
+      - path: tools/registry
+      - path: tools/edit_anthropic
+      - path: tools/submit
+    env_variables:
+      USE_FILEMAP: 'true'
+    enable_bash_tool: true
+    parse_function:
+      type: xml_function_calling
+    execution_timeout: 300
+  history_processors:
+    - type: last_n_observations
+      n: 1
+  model:
+    name: instant_empty_submit
+    per_instance_cost_limit: 0
+    per_instance_call_limit: 0
+    temperature: 0.0

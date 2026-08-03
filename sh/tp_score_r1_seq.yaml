@@ -1,0 +1,14 @@
+name: score-r1-seq
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 14400
+cmd: >-
+  bash /path/to/SWE-MiniSandbox/sh/score_r1_seq.sh

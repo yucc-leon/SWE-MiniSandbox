@@ -1,0 +1,14 @@
+name: rescore-all-relink
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 21600
+cmd: >-
+  bash /path/to/SWE-MiniSandbox/sh/rescore_all_relink.sh

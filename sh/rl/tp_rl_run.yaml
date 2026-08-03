@@ -1,0 +1,28 @@
+name: swe-rl-learn2
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 4
+replicas: 1
+privileged: true
+hostnetwork: true
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate codescout-cann83 &&
+  PURL=$(cat /path/to/SWE-MiniSandbox/vendor/.proxy_url) &&
+  python -m pip install -q --no-deps --proxy "$PURL" beautifulsoup4 soupsieve chardet ghapi fastcore flask flask-cors flask-socketio python-socketio python-engineio bidict simple-parsing rich-argparse ruamel.yaml ruamel.yaml.clib GitPython gitdb smmap tabulate python-dotenv pydantic-settings textual linkify-it-py mdit-py-plugins 2>&1 | tail -1 || true ;
+  python -m pip install -q --proxy "$PURL" modal 2>&1 | tail -1 || true ;
+  rm -rf /path/to/SWE-MiniSandbox/vendor/swesmith-cache/rl-run 2>/dev/null || true ;
+  R=/path/to/SWE-MiniSandbox &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$R/SWE-ReX/src:$R/SWE-agent:$R/sandboxdev:$R/SWE-bench:$R/R2E-Gym/src:$R/mini-swe-agent/src &&
+  export SWE_RELINK_EDITABLE=1 SWESMITH_FULL_DEPS=1 PYTHONNOUSERSITE=1 LITELLM_LOCAL_MODEL_COST_MAP=True &&
+  echo "=== SERIAL PRE-WARM venvs (avoid NROLL>1 concurrent-build race) ===" &&
+  python $R/sh/rl/prewarm_venvs.py 2>&1 | tee $R/vendor/rl_prewarm.log ;
+  export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 &&
+  bash -x /path/to/SWE-MiniSandbox/sh/rl/mini_swe_rl/run_swe_rl_npu.sh > /path/to/SWE-MiniSandbox/vendor/rl_run_top.log 2>&1

@@ -1,0 +1,29 @@
+name: glm-sample-oauthlib-p2
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 10800
+cmd: >-
+  RT=/path/to/SWE-MiniSandbox/.runtime/glm-sample-oauthlib-p2 && mkdir -p "$RT" &&
+  cd /path/to/SWE-MiniSandbox &&
+  export EVAL_CONFIG_PATH=/path/to/SWE-MiniSandbox/config/swesmith_infer.yaml
+  INSTANCE_TYPE=swesmith
+  INSTANCE_PATH=/path/to/SWE-MiniSandbox/dataset/SWE-smith
+  INSTANCE_SPLIT=train INSTANCE_END=59136
+  INSTANCE_FILTER='.*oauthlib__oauthlib.*func_basic' INSTANCE_SLICE=':18'
+  NUM_WORKERS=6 STEP_LIMIT=40
+  AUTO_START_SERVER=0 API_BASE=http://127.0.0.1:30131/v1
+  MODEL_NAME=openai/glm-5.2 SERVED_MODEL_NAME=glm-5.2
+  MSWEA_API_KEY=$(cat /path/to/SWE-MiniSandbox/vendor/.glm_key)
+  MSWEA_MAX_TOKENS=32768 MSWEA_TEMPERATURE=1.0 MSWEA_TOP_P=0.95 SWE_RELINK_EDITABLE=1
+  GITCACHE_ROOT=/path/to/SWE-MiniSandbox/vendor/swesmith-cache/sampling-pool/gitcache
+  SHARED_VENV_ROOT=/path/to/SWE-MiniSandbox/vendor/swesmith-cache/sampling-pool/shared_venv
+  RUNTIME_ROOT="$RT" &&
+  bash /path/to/SWE-MiniSandbox/sh/run_minisweagent_gen.sh > "$RT/gen.log" 2>&1

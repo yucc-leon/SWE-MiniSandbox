@@ -1,0 +1,41 @@
+# ============================================================================
+# STAGED — DO NOT AUTO-SUBMIT. Awaiting user approval (morning 2026-06-22).
+# GLM sampling on the FAITHFUL pool (gold→1 ∧ buggy→0), clean protocol, ≤4 workers.
+# Overnight I will populate:
+#   - vendor/glm_morning_filter.txt   (the faithful instance set)
+#   - vendor/swesmith-cache/screen300-pool  (merged new-code caches for those instances)
+# GLM API is an internal IP -> direct (no proxy); git uses proxy via git config only.
+# ============================================================================
+name: glm-morning-sample
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True MSWEA_COST_TRACKING=ignore_errors SWE_RELINK_EDITABLE=1 &&
+  POOL=$ROOT/vendor/swesmith-cache/screen300-pool &&
+  export EVAL_CONFIG_PATH=$ROOT/config/swesmith_infer.yaml
+  MSWEA_AGENT_CONFIG=$ROOT/mini-swe-agent/src/minisweagent/config/benchmarks/swebench_minisweagent_clean.yaml
+  INSTANCE_TYPE=swesmith INSTANCE_PATH=$ROOT/dataset/SWE-smith INSTANCE_SPLIT=train INSTANCE_END=59136
+  INSTANCE_FILTER="$(cat $ROOT/vendor/glm_morning_filter.txt)"
+  RUNTIME_ROOT=$POOL
+  API_BASE=http://127.0.0.1:30131/v1 MODEL_NAME=openai/glm-5.2
+  MSWEA_API_KEY="$(cat $ROOT/vendor/.glm_key)" MSWEA_TEMPERATURE=1.0 MSWEA_TOP_P=0.95 MSWEA_MAX_TOKENS=32768
+  NUM_WORKERS=4 STEP_LIMIT=60 MSWEA_NUM_RETRIES=6 &&
+  curl -sS -m 15 $API_BASE/models -H "Authorization: Bearer $(cat $ROOT/vendor/.glm_key)" -o /dev/null -w "glm_http=%{http_code}\n" &&
+  OUT_DIR=$POOL/glm-sample/attempt_1 python sh/run_minisweagent_gen.py

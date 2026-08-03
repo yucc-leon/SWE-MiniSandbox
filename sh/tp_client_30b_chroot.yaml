@@ -1,0 +1,21 @@
+name: client-q30a3b-chroot-v2
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 14400
+cmd: >-
+  RT=/path/to/SWE-MiniSandbox/.runtime/decoupled-30b-client-v2 && mkdir -p "$RT" &&
+  cd /path/to/SWE-MiniSandbox &&
+  { echo "=== net probe ==="; curl -fsS --max-time 10 http://192.168.177.144:8001/v1/models && echo "REACHABLE" || echo "UNREACHABLE rc=$?"; } > "$RT/netprobe.log" 2>&1 &&
+  export AUTO_START_SERVER=0 API_BASE=http://192.168.177.144:8001/v1
+  MODEL_NAME=openai/Qwen3-30B-A3B SERVED_MODEL_NAME=Qwen3-30B-A3B
+  NUM_WORKERS=8 INSTANCE_SLICE=:30 STEP_LIMIT=40
+  RUNTIME_ROOT="$RT" &&
+  bash /path/to/SWE-MiniSandbox/sh/run_minisweagent_gen.sh > "$RT/client.log" 2>&1

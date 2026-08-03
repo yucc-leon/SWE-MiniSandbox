@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+echo "host=$(hostname) user=$(whoami)"
+P="http://proxy.example.com:1080"
+echo "=== direct (no proxy) ==="
+curl -sS --max-time 10 -o /dev/null -w "github direct: %{http_code}\n" https://github.com 2>&1 || echo "github direct: FAIL"
+echo "=== via cluster proxy ==="
+curl -sS --max-time 12 -x "$P" -o /dev/null -w "github via proxy: %{http_code}\n" https://github.com 2>&1 || echo "github via proxy: FAIL"
+curl -sS --max-time 12 -x "$P" -o /dev/null -w "pypi via proxy: %{http_code}\n" https://pypi.org 2>&1 || echo "pypi via proxy: FAIL"
+echo "=== git clone test via proxy (swesmith repo) ==="
+GIT_SSL_NO_VERIFY=1 git -c http.proxy="$P" -c https.proxy="$P" ls-remote --heads https://github.com/swesmith/oauthlib__oauthlib.1fd52536 2>&1 | head -2 || echo "git ls-remote FAIL"
+echo "EXIT=$?"

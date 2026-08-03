@@ -1,0 +1,17 @@
+name: mswea-eval-4b-chroot-validate30
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 1
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 14400
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  export INSTANCE_SLICE=:30 NUM_WORKERS=8 STEP_LIMIT=40
+  RUNTIME_ROOT=/path/to/SWE-MiniSandbox/.runtime/mswea-eval-4b-chroot-validate30 &&
+  bash /path/to/SWE-MiniSandbox/sh/run_minisweagent_gen.sh

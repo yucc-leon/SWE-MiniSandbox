@@ -1,0 +1,18 @@
+name: disk-probe
+type: common
+image: "346"
+dc: "19"
+cpus: 2
+ram: 32
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+maxrunseconds: 300
+cmd: >-
+  OUT=/path/to/SWE-MiniSandbox/vendor/local_disk_probe.txt &&
+  { echo "=== df -h(看 Filesystem 区分本地 vs nfs)==="; df -h / /tmp /root /dev/shm /sharedata 2>/dev/null;
+    echo "=== mount 类型 ==="; mount | grep -E " / | /tmp | /root | /dev/shm | /sharedata " | head;
+    echo "=== 本地写速测(/root 写 500MB)==="; dd if=/dev/zero of=/path/to/root/_spd bs=1M count=500 oflag=direct 2>&1 | tail -1; rm -f /path/to/root/_spd;
+    echo "=== 小文件测(/root 建 2000 小文件)==="; mkdir -p /path/to/root/_sf; t0=$(date +%s); for i in $(seq 1 2000); do echo x>/path/to/root/_sf/f$i; done; t1=$(date +%s); echo "2000 small files in $((t1-t0))s"; rm -rf /path/to/root/_sf;
+  } > "$OUT" 2>&1 && echo DISKPROBE_DONE >> "$OUT"

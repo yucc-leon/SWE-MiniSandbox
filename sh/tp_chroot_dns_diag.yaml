@@ -1,0 +1,14 @@
+name: chroot-dns-diag3
+type: common
+image: "346"
+dc: "19"
+cpus: 8
+ram: 32
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 1800
+cmd: >-
+  bash /path/to/SWE-MiniSandbox/sh/chroot_dns_diag.sh > /path/to/SWE-MiniSandbox/vendor/chroot_dns_diag.out 2>&1

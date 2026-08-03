@@ -1,0 +1,14 @@
+name: reset-diag
+type: common
+image: "346"
+dc: "19"
+cpus: 4
+ram: 16
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 1200
+cmd: >-
+  bash /path/to/SWE-MiniSandbox/sh/reset_diag.sh

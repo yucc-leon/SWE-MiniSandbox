@@ -1,0 +1,34 @@
+name: ds2-buggy
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 21600
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True SWESMITH_FULL_DEPS=1 SWE_SANDBOX_PRECHECK_NO_GOLD=1 &&
+  HSH=$(python3 -c "print('|'.join(l.strip().rsplit('__',1)[1] for l in open('$ROOT/vendor/deepscreen2_gold1_new.txt') if l.strip()))") &&
+  N=$(python3 -c "print(sum(1 for l in open('$ROOT/vendor/deepscreen2_gold1_new.txt') if l.strip()))") &&
+  echo "buggy-screening N=$N gold→1 candidates" &&
+  P=$ROOT/vendor/swesmith-cache/rl-deepscreen2 &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 12
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter ".*__($HSH)" --instances.slice ":$N"
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $P/sandbox-buggy --instances.deployment.git_base_path $P/gitcache --instances.deployment.shared_venv $P/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $P/buggy-output 2>&1 | tee $P/buggy.log ;
+  python3 -c "import json,glob,os;preds=glob.glob('$P/buggy-output/*/*.pred')+glob.glob('$P/buggy-output/*.pred');b0=[];[b0.append(json.load(open(f)).get('instance_id') or os.path.basename(os.path.dirname(f))) for f in preds if json.load(open(f)).get('reward')==0];print(f'[ds2-buggy] buggy→0 (faithful)={len(b0)}/{len(preds)}');open('$ROOT/vendor/deepscreen2_faithful.txt','w').write(chr(10).join(sorted(set(b0))))" | tee -a $P/buggy.log

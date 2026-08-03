@@ -1,0 +1,28 @@
+name: diag-reset
+type: common
+image: "346"
+dc: "19"
+cpus: 16
+ram: 128
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+maxrunseconds: 3600
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True SWESMITH_FULL_DEPS=1 SWE_RELINK_EDITABLE=1 &&
+  P=$ROOT/vendor/swesmith-cache/glm50-rescore &&
+  export EVAL_CONFIG_PATH=$ROOT/config/swesmith_infer.yaml
+  INSTANCE_PATH=$ROOT/dataset/SWE-smith
+  INSTANCE_FILTER="$(cat $ROOT/vendor/glm_sample_50.txt)"
+  RUNTIME_ROOT=$P GITCACHE_ROOT=$P/gitcache SHARED_VENV_ROOT=$P/shared_venv
+  WHEELHOUSE_ROOT=$ROOT/vendor/minisandbox-wheelhouse CONDA_BACKEND_ROOT=/path/to/workspace/minisandbox-conda &&
+  python sh/diag_reset.py 2>&1 | tee $P/diag_reset.log

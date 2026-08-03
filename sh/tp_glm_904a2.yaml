@@ -1,0 +1,39 @@
+name: glm-904a2
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL
+  NO_PROXY=127.0.0.1,127.0.0.1,localhost no_proxy=127.0.0.1,127.0.0.1,localhost &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True MSWEA_COST_TRACKING=ignore_errors
+  SWE_RELINK_EDITABLE=1 SWESMITH_FULL_DEPS=1 SWE_SANDBOX_SCORE_MODEL_PATCH=1 SCORE_INLINE=0 &&
+  GLM=http://127.0.0.1:30131/v1 &&
+  curl -sS -m 15 $GLM/models -H "Authorization: Bearer $(cat $ROOT/vendor/.glm_key)" -o /dev/null -w "glm_http=%{http_code}\n" &&
+  POOL=$ROOT/vendor/swesmith-cache/glm-904a2 && mkdir -p $POOL &&
+  export EVAL_CONFIG_PATH=$ROOT/config/swesmith_infer.yaml
+  MSWEA_AGENT_CONFIG=$ROOT/mini-swe-agent/src/minisweagent/config/benchmarks/swebench_minisweagent_clean.yaml
+  INSTANCE_TYPE=swesmith INSTANCE_PATH=$ROOT/dataset/SWE-smith INSTANCE_SPLIT=train INSTANCE_END=59136
+  INSTANCE_FILTER="$(cat $ROOT/vendor/glm_shardA.txt)" INSTANCE_SLICE=':1000'
+  RUNTIME_ROOT=$POOL OUT_DIR=$POOL/out
+  GITCACHE_ROOT=$POOL/gitcache SHARED_VENV_ROOT=$POOL/shared_venv
+  API_BASE=$GLM MODEL_NAME=openai/glm-5.2 MSWEA_API_KEY="$(cat $ROOT/vendor/.glm_key)"
+  MSWEA_MODEL_CLASS=swesandbox.glm_instrumented_model.GLMInstrumentedModel GLM_CALLS_LOG=$POOL/glm_calls.jsonl MSWEA_TEMPERATURE=1.0 MSWEA_TOP_P=0.95 MSWEA_MAX_TOKENS=32768 NUM_WORKERS=6 STEP_LIMIT=40 MSWEA_NUM_RETRIES=8 &&
+  python sh/run_minisweagent_gen.py 2>&1 | tee $POOL/run.log ;
+  echo "=== 429/限流统计(并发上限参考)===" | tee -a $POOL/run.log ;
+  grep -cE "429|RateLimit|rate.limit" $POOL/run.log | tee -a $POOL/run.log ;
+  grep -E "\[throughput\] DONE" $POOL/run.log | tee -a $POOL/run.log

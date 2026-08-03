@@ -1,0 +1,32 @@
+# Local runtime outputs and experiment artifacts
+.runtime/
+.quarantine/
+output*.json
+fusion_result.json
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+site/
+
+# Local tooling state
+.codex
+.context-hub/
+*.log
+*.pid
+.claude/
+
+# Large data / caches / models / checkpoints — NEVER commit (multi-GB)
+dataset/
+vendor/
+data/
+outputs/
+mdit-py-plugins
+*.parquet
+*.safetensors
+*.tar
+*.whl

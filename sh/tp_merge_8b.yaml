@@ -1,0 +1,20 @@
+name: merge-8b-hf4
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 1
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 7200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  export PATH=/path/to/workspace/miniforge3/envs/verl-rl-train/bin:/path/to/workspace/miniforge3/bin:$PATH &&
+  export PYTHONPATH=/path/to/KTAscendRL/verl:$PYTHONPATH &&
+  CKPT=/path/to/SWE-MiniSandbox/vendor/sft-ckpt/swe_sft_8b/global_step_78 &&
+  OUT=/path/to/SWE-MiniSandbox/vendor/sft-ckpt/swe_sft_8b_hf &&
+  python -m verl.model_merger merge --backend fsdp --local_dir $CKPT --target_dir $OUT 2>&1 | tee /path/to/SWE-MiniSandbox/vendor/sft-ckpt/merge_8b.log ;
+  echo "[merge-8b] target contents:" && ls -la $OUT

@@ -1,0 +1,35 @@
+name: build-swesmith-cache
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh &&
+  conda activate swe-sandbox &&
+  export PYTHONPATH=/path/to/SWE-MiniSandbox/SWE-ReX/src:/path/to/SWE-MiniSandbox/SWE-agent:/path/to/SWE-MiniSandbox/sandboxdev:/path/to/SWE-MiniSandbox/SWE-bench:/path/to/SWE-MiniSandbox/R2E-Gym/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True &&
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  POOL=/path/to/SWE-MiniSandbox/vendor/swesmith-cache/screen-pool &&
+  python -m sweagent run-batch
+  --config /path/to/SWE-MiniSandbox/config/swesmith_infer.yaml
+  --env_type sandbox --num_workers 12
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path /path/to/SWE-MiniSandbox/dataset/SWE-smith --instances.split train
+  --instances.start 0 --instances.end 59136
+  --instances.filter "$(cat /path/to/SWE-MiniSandbox/vendor/sampling_filter.txt)" --instances.slice ':150'
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot false
+  --instances.deployment.root_base $POOL/sandbox
+  --instances.deployment.git_base_path $POOL/gitcache
+  --instances.deployment.shared_venv $POOL/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda
+  --instances.deployment.wheelhouse /path/to/SWE-MiniSandbox/vendor/minisandbox-wheelhouse
+  --instances.deployment.tool_path /path/to/SWE-MiniSandbox/SWE-agent/tools
+  --output_dir $POOL/cache-build-output

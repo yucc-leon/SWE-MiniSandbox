@@ -1,0 +1,37 @@
+name: relink-verify
+type: common
+image: "346"
+dc: "19"
+cpus: 16
+ram: 128
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 7200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh &&
+  conda activate swe-sandbox &&
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True SWE_SANDBOX_SCORE_MODEL_PATCH=1 SWE_RELINK_EDITABLE=1 &&
+  R2=$ROOT/vendor/swesmith-cache/broad-pool-r2 &&
+  SC=$ROOT/vendor/swesmith-cache/relink-verify && rm -rf $SC && mkdir -p $SC/sandbox &&
+  python -m sweagent run-batch
+  --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 6
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train
+  --instances.start 0 --instances.end 59136
+  --instances.filter "$(cat $ROOT/vendor/relink_test_filter.txt)" --instances.slice ':8'
+  --instances.model_patch_file $ROOT/vendor/relink_test_patches.json
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot false
+  --instances.deployment.root_base $SC/sandbox
+  --instances.deployment.git_base_path $R2/gitcache
+  --instances.deployment.shared_venv $R2/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda
+  --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse
+  --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $SC/output

@@ -1,0 +1,66 @@
+name: rl-throughput
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 5400
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True SWESMITH_FULL_DEPS=1 SWE_RELINK_EDITABLE=1 &&
+  LOCAL=/path/to/root/rlthr && rm -rf $LOCAL && mkdir -p $LOCAL/sandbox $LOCAL/gitcache &&
+  OUT=$ROOT/vendor/swesmith-cache/rl-throughput && rm -rf $OUT && mkdir -p $OUT &&
+  FILT=".*__($(head -12 $ROOT/vendor/faithful_verified.txt | sed 's/.*__//' | paste -sd'|'))" &&
+  echo "[rlthr] filter=$FILT" > $OUT/timing.log &&
+  echo "[rlthr] === RUN1 workers=1 (串行,含1次冷 venv 解压到本地 + 12×(reset+测试)) ===" | tee -a $OUT/timing.log &&
+  T0=$(date +%s) &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 1
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter "$FILT" --instances.slice :12
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $LOCAL/sandbox --instances.deployment.git_base_path $LOCAL/gitcache
+  --instances.deployment.shared_venv $ROOT/vendor/swesmith-cache/rl-warm-pool/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $OUT/run1 > $OUT/run1.log 2>&1 ;
+  T1=$(date +%s) &&
+  echo "[rlthr] RUN1 总耗时 $((T1-T0))s / 12 实例 = 串行均 $(( (T1-T0)/12 ))s/实例(含一次性冷解压)" | tee -a $OUT/timing.log &&
+  echo "[rlthr] === RUN2 workers=1 (本地 venv 已热,纯 steady-state reset+测试) ===" | tee -a $OUT/timing.log &&
+  T2=$(date +%s) &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 1
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter "$FILT" --instances.slice :12
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $LOCAL/sandbox --instances.deployment.git_base_path $LOCAL/gitcache
+  --instances.deployment.shared_venv $ROOT/vendor/swesmith-cache/rl-warm-pool/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $OUT/run2 > $OUT/run2.log 2>&1 ;
+  T3=$(date +%s) &&
+  echo "[rlthr] RUN2 总耗时 $((T3-T2))s / 12 = steady 均 $(( (T3-T2)/12 ))s/实例(≈每 rollout 的 env 操作成本:reset+跑测试,不含模型推理)" | tee -a $OUT/timing.log &&
+  echo "[rlthr] === RUN3 workers=8 (并发吞吐) ===" | tee -a $OUT/timing.log &&
+  T4=$(date +%s) &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 8
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter "$FILT" --instances.slice :12
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $LOCAL/sandbox --instances.deployment.git_base_path $LOCAL/gitcache
+  --instances.deployment.shared_venv $ROOT/vendor/swesmith-cache/rl-warm-pool/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $OUT/run3 > $OUT/run3.log 2>&1 ;
+  T5=$(date +%s) &&
+  echo "[rlthr] RUN3(8并发) 12 实例总 $((T5-T4))s = 吞吐 $(python3 -c "print(f'{12/($T5-$T4):.2f}')") 实例/秒" | tee -a $OUT/timing.log &&
+  echo "[rlthr] DONE" | tee -a $OUT/timing.log

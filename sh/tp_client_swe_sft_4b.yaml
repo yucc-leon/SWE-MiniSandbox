@@ -1,0 +1,36 @@
+name: client-swe-sft-4b
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 14400
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL NO_PROXY=__SERVE_HOST__,127.0.0.1,localhost no_proxy=__SERVE_HOST__,127.0.0.1,localhost &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  export GIT_CONFIG_COUNT=3
+  GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0=$PURL
+  GIT_CONFIG_KEY_1=https.proxy GIT_CONFIG_VALUE_1=$PURL
+  GIT_CONFIG_KEY_2=http.proxyAuthMethod GIT_CONFIG_VALUE_2=basic &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True MSWEA_COST_TRACKING=ignore_errors SWE_RELINK_EDITABLE=1 SWESMITH_FULL_DEPS=1 &&
+  RT=$ROOT/vendor/swesmith-cache/eval-sft-client && mkdir -p "$RT" &&
+  { curl -fsS --max-time 10 __API_BASE__/models && echo " REACHABLE" || echo "UNREACHABLE"; } > "$RT/netprobe.log" 2>&1 &&
+  export AUTO_START_SERVER=0 API_BASE=__API_BASE__ MODEL_NAME=openai/swe-sft-4b SERVED_MODEL_NAME=swe-sft-4b &&
+  export EVAL_CONFIG_PATH=$ROOT/config/swesmith_infer.yaml
+  MSWEA_AGENT_CONFIG=$ROOT/mini-swe-agent/src/minisweagent/config/benchmarks/swebench_minisweagent_clean.yaml
+  INSTANCE_TYPE=swesmith INSTANCE_PATH=$ROOT/dataset/SWE-smith INSTANCE_SPLIT=train INSTANCE_END=59136
+  INSTANCE_FILTER="$(cat $ROOT/vendor/eval_heldout_filter.txt)"
+  RUNTIME_ROOT="$RT" NUM_WORKERS=4 STEP_LIMIT=60 MSWEA_TEMPERATURE=0.0 INSTANCE_SLICE=:15
+  OUT_DIR="$RT/eval-output" &&
+  bash sh/run_minisweagent_gen.sh

@@ -1,0 +1,27 @@
+name: clone-probe-hostnet
+type: common
+image: "346"
+dc: "19"
+cpus: 8
+ram: 32
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: true
+node_exclusive: false
+maxrunseconds: 900
+cmd: >-
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  git config --global http.proxy "" && git config --global https.proxy "" &&
+  echo "=== probe: hostnetwork=true, proxy disabled ===" &&
+  OUT=/path/to/SWE-MiniSandbox/vendor/clone_probe_hostnet.txt &&
+  echo "PROBE_START" > $OUT &&
+  REPOS="swesmith/jd__tenacity.0d40e76f swesmith/PyCQA__flake8.cf1542ce swesmith/pallets__click.fde47b4d swesmith/psf__requests.0192aac2 swesmith/scrapy__scrapy.35212ec5 swesmith/sympy__sympy.78809864 swesmith/django__django.0ab58c12 swesmith/numpy__numpy.4adc87dd swesmith/pandas-dev__pandas.95280573 swesmith/matplotlib__matplotlib.a3011dfd" &&
+  OK=0; N=0 &&
+  for r in $REPOS; do
+  N=$((N+1)); rm -rf /tmp/p$N;
+  if timeout 90 git clone --depth 1 https://github.com/$r /tmp/p$N >/dev/null 2>&1; then OK=$((OK+1)); echo "OK  $r" >> $OUT; else echo "FAIL $r" >> $OUT; fi;
+  rm -rf /tmp/p$N;
+  done &&
+  echo "CLONE_PROBE_RESULT ok=$OK/$N" >> $OUT &&
+  echo "CLONE_PROBE_RESULT ok=$OK/$N"

@@ -1,0 +1,42 @@
+env_type: sandbox
+num_workers: 8
+output_dir: .runtime/ascend-prepare/output
+instances:
+  type: file
+  path: /tmp/prewarm-instances.jsonl
+  deployment:
+    root_base: .runtime/ascend-prepare/sandbox
+    git_base_path: .runtime/ascend-prepare/gitcache
+    data_type: swebench
+    tool_path: SWE-agent/tools
+    conda_env: /path/to/workspace/minisandbox-conda
+    abs_tool_path: /tools
+    shared_venv: .runtime/ascend-prepare/shared_venv
+    git_folder: testbed
+    eval_timeout: 300
+    use_chroot: false
+    type: sandbox
+agent:
+  type: empty
+  pre_check: false
+  templates:
+    system_template: ""
+    instance_template: "{{problem_statement}}"
+    next_step_template: "{{observation}}"
+    next_step_no_output_template: "{{observation}}"
+    max_observation_length: 1000
+  tools:
+    bundles:
+      - path: tools/registry
+      - path: tools/edit_anthropic
+      - path: tools/submit
+    env_variables:
+      USE_FILEMAP: "true"
+    enable_bash_tool: true
+    execution_timeout: 300
+  model:
+    name: instant_empty_submit
+    per_instance_cost_limit: 0
+    total_cost_limit: 0
+    per_instance_call_limit: 0
+    temperature: 0.0

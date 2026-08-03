@@ -1,0 +1,35 @@
+name: serve-q30a3b-nopin
+type: common
+image: "346"
+dc: "19"
+cpus: 48
+ram: 384
+gpus: 4
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 21600
+cmd: >-
+  RT=/path/to/SWE-MiniSandbox/.runtime/decoupled-30b &&
+  mkdir -p "$RT" && rm -f "$RT/api_base.txt" &&
+  cd /path/to/SWE-MiniSandbox &&
+  { echo "ALLOC=$ASCEND_VISIBLE_DEVICES RT=$ASCEND_RT_VISIBLE_DEVICES"; npu-smi info 2>&1 | head -25; } > "$RT/devdiag.txt" 2>&1 &&
+  ENFORCE_EAGER=0 ENABLE_EXPERT_PARALLEL=1 ASYNC_SCHEDULING=1 ASCEND_PERF_TUNING=1
+  MODEL_PATH=/path/to/workspace/models/Qwen3-30B-A3B-Instruct-2507
+  SERVED_MODEL_NAME=Qwen3-30B-A3B VLLM_ENV_NAME=vllm-ascend-cann8.5-v017
+  TENSOR_PARALLEL_SIZE=4 DATA_PARALLEL_SIZE=2 PORT=8001
+  MAX_MODEL_LEN=32768 MAX_NUM_SEQS=256 GPU_MEMORY_UTILIZATION=0.9
+  nohup bash /path/to/SWE-MiniSandbox/sh/serve_qwen_ascend.sh > "$RT/serve.log" 2>&1 &
+  SPID=$! ;
+  for i in $(seq 1 360); do
+    if curl -fsS --max-time 5 http://127.0.0.1:8001/v1/models >/dev/null 2>&1; then
+      echo "http://$(hostname -I | awk '{print $1}'):8001/v1" > "$RT/api_base.txt" ;
+      echo "[serve] READY, api_base=$(cat $RT/api_base.txt)" ;
+      break ;
+    fi ;
+    if ! kill -0 "$SPID" 2>/dev/null; then echo "[serve] serve exited early, see serve.log" ; tail -30 "$RT/serve.log" ; exit 1 ; fi ;
+    sleep 10 ;
+  done ;
+  [ -f "$RT/api_base.txt" ] || { echo "[serve] timed out waiting for API" ; exit 1 ; } ;
+  wait "$SPID"

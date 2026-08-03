@@ -1,0 +1,29 @@
+name: chroot-score-v2
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 14400
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src LITELLM_LOCAL_MODEL_COST_MAP=True SWE_SANDBOX_SCORE_MODEL_PATCH=1 SWE_RELINK_EDITABLE=1 &&
+  POOL=$ROOT/vendor/swesmith-cache/chroot-pool &&
+  SC=$ROOT/vendor/swesmith-cache/chroot-score && rm -rf $SC && mkdir -p $SC/sandbox &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 8
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter "$(cat $ROOT/vendor/chroot_score_filter.txt)" --instances.slice ':12'
+  --instances.model_patch_file $ROOT/vendor/chroot_sample_nonempty.json
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot true
+  --instances.deployment.root_base $SC/sandbox --instances.deployment.git_base_path $POOL/gitcache --instances.deployment.shared_venv $POOL/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $SC/output

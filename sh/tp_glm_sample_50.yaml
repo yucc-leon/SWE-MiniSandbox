@@ -1,0 +1,46 @@
+name: glm-sample-50
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL
+  NO_PROXY=127.0.0.1,127.0.0.1,localhost no_proxy=127.0.0.1,127.0.0.1,localhost &&
+  export GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=true &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True MSWEA_COST_TRACKING=ignore_errors SWE_RELINK_EDITABLE=1 SWESMITH_FULL_DEPS=1 &&
+  GLM=http://127.0.0.1:30131/v1 &&
+  echo "=== GLM reachability ===" &&
+  curl -sS -m 15 $GLM/models -H "Authorization: Bearer $(cat $ROOT/vendor/.glm_key)" -o /dev/null -w "glm_http=%{http_code}\n" &&
+  POOL=$ROOT/vendor/swesmith-cache/glm-sample-50 && mkdir -p $POOL &&
+  export EVAL_CONFIG_PATH=$ROOT/config/swesmith_infer.yaml
+  MSWEA_AGENT_CONFIG=$ROOT/mini-swe-agent/src/minisweagent/config/benchmarks/swebench_minisweagent_clean.yaml
+  INSTANCE_TYPE=swesmith INSTANCE_PATH=$ROOT/dataset/SWE-smith INSTANCE_SPLIT=train INSTANCE_END=59136
+  INSTANCE_FILTER="$(cat $ROOT/vendor/glm_sample_50.txt)"
+  GITCACHE_ROOT=$ROOT/vendor/swesmith-cache/rl-warm-pool/gitcache
+  SHARED_VENV_ROOT=$ROOT/vendor/swesmith-cache/rl-warm-pool/shared_venv
+  API_BASE=$GLM MODEL_NAME=openai/glm-5.2 MSWEA_API_KEY="$(cat $ROOT/vendor/.glm_key)"
+  MSWEA_TEMPERATURE=1.0 MSWEA_TOP_P=0.95 MSWEA_MAX_TOKENS=32768 NUM_WORKERS=2 STEP_LIMIT=40 MSWEA_NUM_RETRIES=6 &&
+  echo "=== GUARD: smoke 2 instances first ===" &&
+  INSTANCE_SLICE=':2' RUNTIME_ROOT=$POOL/smoke OUT_DIR=$POOL/smoke python sh/run_minisweagent_gen.py > $POOL/smoke.log 2>&1 ;
+  NEMPTY=$(python3 -c "import json,glob; fs=glob.glob('$POOL/smoke/preds.json')+glob.glob('$POOL/smoke/*/preds.json'); d=json.load(open(fs[0])) if fs else {}; print(sum(1 for v in d.values() if str(v.get('model_patch','')).strip()))" 2>/dev/null || echo 0) ;
+  echo "[guard] smoke 非空 patch = $NEMPTY" | tee $POOL/guard.log ;
+  if [ "$NEMPTY" -ge 1 ]; then
+    echo "[guard] PASS -> 跑全量 50" | tee -a $POOL/guard.log ;
+    INSTANCE_SLICE=':50' RUNTIME_ROOT=$POOL OUT_DIR=$POOL/glm50 python sh/run_minisweagent_gen.py > $POOL/glm50.log 2>&1 ;
+    echo "[done] glm50 preds=$(python3 -c "import json,glob;fs=glob.glob('$POOL/glm50/preds.json')+glob.glob('$POOL/glm50/*/preds.json');d=json.load(open(fs[0])) if fs else {};print(len(d), sum(1 for v in d.values() if str(v.get('model_patch','')).strip()))" 2>/dev/null)" | tee -a $POOL/guard.log ;
+  else
+    echo "[guard] SCAFFOLD_EMPTY_ABORT —— smoke 出 0 非空 patch,中止 50,不浪费 GLM 配额。查 $POOL/smoke.log" | tee -a $POOL/guard.log ;
+  fi

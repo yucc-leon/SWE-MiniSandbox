@@ -1,0 +1,27 @@
+name: sft-zaki-raw-a-full-8b-r1
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 768
+gpus: 8
+replicas: 1
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 43200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  WANDB_API_KEY_FILE=/path/to/workspace/.wandb_api_key
+  SMOKE=0
+  MODEL_PATH=/path/to/workspace/models/Qwen3-8B
+  TRAIN_PARQUET=/path/to/SWE-MiniSandbox/vendor/sft-data/zaki_raw_vA_text_full.parquet
+  NPROC=8
+  ULYSSES_SP_SIZE=8
+  MAX_LENGTH=4096
+  TRAIN_BATCH_SIZE=16
+  TOTAL_EPOCHS=3
+  SAVE_FREQ=50
+  EXP=zaki_raw_vA_text_full_8b_r1
+  HF_OUT=/path/to/SWE-MiniSandbox/vendor/sft-ckpt/zaki_raw_vA_text_full_8b_r1_hf
+  bash /path/to/SWE-MiniSandbox/sh/sft/run_swe_sft_4b.sh
+  2>&1 | tee /path/to/SWE-MiniSandbox/vendor/sft-ckpt/zaki_raw_vA_text_full_8b_r1.log

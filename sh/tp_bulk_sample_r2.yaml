@@ -1,0 +1,34 @@
+name: bulk-sample-r2
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: false
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh &&
+  conda activate swe-sandbox &&
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True MSWEA_COST_TRACKING=ignore_errors &&
+  R2=$ROOT/vendor/swesmith-cache/broad-pool-r2 &&
+  export EVAL_CONFIG_PATH=$ROOT/config/swesmith_infer.yaml
+  MSWEA_AGENT_CONFIG=$ROOT/mini-swe-agent/src/minisweagent/config/benchmarks/swebench_minisweagent_clean.yaml
+  INSTANCE_TYPE=swesmith INSTANCE_PATH=$ROOT/dataset/SWE-smith INSTANCE_SPLIT=train INSTANCE_END=59136
+  INSTANCE_FILTER="$(cat $ROOT/vendor/broad_r2_stageB_filter.txt)" INSTANCE_SLICE=':34'
+  RUNTIME_ROOT=$R2
+  API_BASE=http://127.0.0.1:30131/v1 MODEL_NAME=openai/glm-5.2
+  MSWEA_API_KEY="$(cat $ROOT/vendor/.glm_key)" MSWEA_TEMPERATURE=1.0 MSWEA_TOP_P=0.95 MSWEA_MAX_TOKENS=32768
+  NUM_WORKERS=4 STEP_LIMIT=60 MSWEA_NUM_RETRIES=6 &&
+  curl -sS -m 15 $API_BASE/models -H "Authorization: Bearer $(cat $ROOT/vendor/.glm_key)" -o /dev/null -w "glm_http=%{http_code}\n" &&
+  for i in 1 2 3; do
+    echo "=== ATTEMPT $i ===";
+    OUT_DIR=$R2/bulk-r2/attempt_$i python sh/run_minisweagent_gen.py;
+  done

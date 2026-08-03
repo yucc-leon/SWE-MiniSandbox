@@ -1,0 +1,20 @@
+name: score92
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+maxrunseconds: 7200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  bash sh/swesmith_score.sh
+  $ROOT/vendor/swesmith-cache/glm-904/out/preds.json
+  glm-904
+  $ROOT/vendor/swesmith-cache/glm-904/score92
+  8
+  2>&1 | tee $ROOT/vendor/swesmith-cache/glm-904/score92.log

@@ -1,0 +1,24 @@
+name: rl-envtest4
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 7200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src:$ROOT/mini-swe-agent/src:/path/to/SkyRL/skyrl-gym &&
+  export SWE_SANDBOX_SCORE_MODEL_PATCH=1 SWE_RELINK_EDITABLE=1 SWESMITH_FULL_DEPS=1 LITELLM_LOCAL_MODEL_COST_MAP=True PYTHONNOUSERSITE=1 &&
+  python -m pip install -q --proxy "$PURL" func_timeout omegaconf 2>&1 | tail -1 &&
+  rm -rf $ROOT/vendor/swesmith-cache/rl-envtest &&
+  python $ROOT/sh/rl/test_swe_env.py 2>&1 | tee $ROOT/vendor/rl_envtest.log

@@ -1,0 +1,35 @@
+name: sft402-rescore
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 21600
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  source /path/to/workspace/miniforge3/etc/profile.d/conda.sh && conda activate swe-sandbox &&
+  ROOT=/path/to/SWE-MiniSandbox &&
+  PURL=$(cat $ROOT/vendor/.proxy_url) &&
+  export http_proxy=$PURL https_proxy=$PURL HTTP_PROXY=$PURL HTTPS_PROXY=$PURL &&
+  git config --global http.proxy "$PURL" && git config --global https.proxy "$PURL" && git config --global http.proxyAuthMethod basic &&
+  export PYTHONPATH=$ROOT/SWE-ReX/src:$ROOT/SWE-agent:$ROOT/sandboxdev:$ROOT/SWE-bench:$ROOT/R2E-Gym/src
+  LITELLM_LOCAL_MODEL_COST_MAP=True SWESMITH_FULL_DEPS=1 SWE_RELINK_EDITABLE=1 SWE_SANDBOX_SCORE_MODEL_PATCH=1 &&
+  HSH=$(python3 -c "import json;print('|'.join(k.rsplit('__',1)[1] for k in json.load(open('$ROOT/vendor/sft-data/sft430_patches.json'))))") &&
+  N=$(python3 -c "import json;print(len(json.load(open('$ROOT/vendor/sft-data/sft430_patches.json'))))") &&
+  echo "scoring N=$N model patches, chroot=FALSE" &&
+  POOL=$ROOT/vendor/swesmith-cache/sft402-rescore && rm -rf $POOL && mkdir -p $POOL &&
+  python -m sweagent run-batch --config $ROOT/config/swesmith_infer.yaml --env_type sandbox --num_workers 8
+  --agent.type empty --agent.pre_check true
+  --instances.type swesmith --instances.path $ROOT/dataset/SWE-smith --instances.split train --instances.start 0 --instances.end 59136
+  --instances.filter ".*__($HSH)" --instances.slice ":$N"
+  --instances.model_patch_file $ROOT/vendor/sft-data/sft430_patches.json
+  --instances.deployment.data_type swesmith --instances.deployment.use_chroot false
+  --instances.deployment.root_base $POOL/sandbox --instances.deployment.git_base_path $POOL/gitcache --instances.deployment.shared_venv $POOL/shared_venv
+  --instances.deployment.conda_env /path/to/workspace/minisandbox-conda --instances.deployment.wheelhouse $ROOT/vendor/minisandbox-wheelhouse --instances.deployment.tool_path $ROOT/SWE-agent/tools
+  --output_dir $POOL/score 2>&1 | tee $POOL/rescore.log ;
+  python3 -c "import json;d=json.load(open('$POOL/score/preds.json'));r=[k for k,v in d.items() if v.get('reward')==1];print(f'[sft402-rescore-chrootFALSE] TRUE-resolve={len(r)}/{len(d)}');open('$ROOT/vendor/sft-data/sft402_true_resolved.txt','w').write(chr(10).join(r))" | tee -a $POOL/rescore.log

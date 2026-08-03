@@ -1,0 +1,21 @@
+name: authtest-A
+type: common
+image: "346"
+dc: "19"
+cpus: 8
+ram: 32
+gpus: 1
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 600
+cmd: >-
+  OUT=/path/to/SWE-MiniSandbox/vendor/authtest_A.txt &&
+  echo "PLATFORM=$(uname -m)" > $OUT &&
+  echo "REQ=priv:true gpus:1" >> $OUT &&
+  echo "DAVINCI_DEVS=$(ls /dev/davinci[0-9]* 2>/dev/null | wc -l)" >> $OUT &&
+  echo "NPU_SMI=$(npu-smi info 2>/dev/null | grep -cE '910|310|Ascend')" >> $OUT &&
+  (unshare --mount --fork --pid bash -c 'echo UNSHARE=OK' 2>&1 | tail -1 || echo UNSHARE=FAIL) >> $OUT &&
+  echo "AUTHTEST_DONE" >> $OUT &&
+  cat $OUT

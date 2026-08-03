@@ -1,0 +1,21 @@
+name: build-verified-cache-chroot
+type: common
+image: "346"
+dc: "19"
+cpus: 64
+ram: 512
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 28800
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  export PYTHONPATH=/path/to/SWE-MiniSandbox/SWE-ReX/src:/path/to/SWE-MiniSandbox/SWE-agent:/path/to/SWE-MiniSandbox/sandboxdev:/path/to/SWE-MiniSandbox/SWE-bench:/path/to/SWE-MiniSandbox/R2E-Gym/src
+  DATASET_SPLIT=test NUM_WORKERS=16
+  PREP_DIR=/path/to/SWE-MiniSandbox/.runtime/build-verified-cache-v2
+  GIT_BASE_PATH=/path/to/SWE-MiniSandbox/vendor/verified-cache-chroot/gitcache
+  SHARED_VENV=/path/to/SWE-MiniSandbox/vendor/verified-cache-chroot/shared_venv &&
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY &&
+  bash /path/to/SWE-MiniSandbox/sh/run_sweagent_prepare_ascend.sh

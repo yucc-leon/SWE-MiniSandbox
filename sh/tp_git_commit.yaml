@@ -1,0 +1,34 @@
+name: git-commit-fixes
+type: common
+image: "346"
+dc: "19"
+cpus: 8
+ram: 32
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 1200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  git config --global --add safe.directory /path/to/SWE-MiniSandbox &&
+  git config user.name "YC Li" && git config user.email "leayc@hotmail.com" &&
+  git add .gitignore .gitmodules AGENTS.md &&
+  git add SWE-agent/sweagent/environment/repo.py SWE-agent/sweagent/environment/swe_sbenv.py SWE-agent/sweagent/run/batch_instances.py &&
+  git add sandboxdev/swesandbox/sandbox_deployment.py sandboxdev/swesandbox/utils.py sandboxdev/swesandbox/install_script.py sandboxdev/swesandbox/customer_instance.py sandboxdev/swesandbox/glm_instrumented_model.py sandboxdev/swesandbox/minisweagent_env.py &&
+  git add docs/ sh/ config/ &&
+  echo "=== staged 文件数 ===" && git status --short | grep -E "^[MARD]" | wc -l &&
+  git commit -m "fix(scoring): nail vacuous model-patch scorer + 5 grader/data bugs; wire container-free RL; rebuild docs" -m "Scoring pipeline (the core fix this cycle):
+  - batch_instances.py: model_patch_file was silently ignored for swesmith data source -> ds['patch'] kept the bug diff -> patch --fuzz auto-reverse turned it into the gold fix -> EVERY patch (incl empty) scored resolved (vacuous). Now wired into SWESmithInstances.
+  - sandbox_deployment.py: substring test-name match -> anchored match (kill same-name-sibling false PASS); removed dead p2p/f2p tolerance line.
+  - utils.py: treat GNU patch 'Assuming -R' auto-reverse as FAILED apply.
+  - swesmith_score.sh: empty-patch negative-control canary gate (regression guard).
+  Verified: empty->0 / gold->1 / buggy->0 / wrong-patch 0 false-pass. True usable SFT = 133 (was inflated 430); RL pool = 1864 (gold->1 and buggy->0 rechecked).
+
+  RL: container-free SWE-RL wired into SkyRL (sh/rl/mini_swe_rl/) + auto FSDP->HF merge in SFT script. Tiny GRPO loop MECHANICALLY closed on Ascend (reward 0 / no learning signal yet).
+
+  Docs: rebuilt docs/ — archived 8 superseded/point-in-time docs (docs/archive/), corrected 4 with stale counts, added landscape-framework / data-options-review / rl-loop-status / handoff. Numbers verified.
+
+  Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>" 2>&1 | tail -8 ;
+  echo "=== 提交结果 ===" && git log -1 --stat 2>&1 | head -40

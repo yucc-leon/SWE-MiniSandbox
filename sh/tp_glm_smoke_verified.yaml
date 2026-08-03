@@ -1,0 +1,26 @@
+name: glm52-smoke-verified-v2
+type: common
+image: "346"
+dc: "19"
+cpus: 32
+ram: 256
+gpus: 0
+replicas: 1
+privileged: true
+hostnetwork: false
+node_exclusive: false
+maxrunseconds: 7200
+cmd: >-
+  cd /path/to/SWE-MiniSandbox &&
+  { echo "net probe:"; curl -fsS --max-time 15 http://127.0.0.1:30131/v1/models -H "Authorization: Bearer $(cat vendor/.glm_key)" >/dev/null && echo GLM_REACHABLE || echo GLM_UNREACHABLE; } &&
+  export EVAL_CONFIG_PATH=/path/to/SWE-MiniSandbox/config/sweagent_infer_ascend_officiallike_chroot.yaml
+  DATASET_DIR=/path/to/SWE-MiniSandbox/dataset/SWE-bench/SWE-bench_Verified/data
+  INSTANCE_SLICE=:10 NUM_WORKERS=10 STEP_LIMIT=40
+  AUTO_START_SERVER=0 API_BASE=http://127.0.0.1:30131/v1
+  MODEL_NAME=openai/glm-5.2 SERVED_MODEL_NAME=glm-5.2
+  MSWEA_API_KEY=$(cat /path/to/SWE-MiniSandbox/vendor/.glm_key)
+  MSWEA_MAX_TOKENS=32768 MSWEA_TEMPERATURE=0.0
+  GITCACHE_ROOT=/path/to/SWE-MiniSandbox/vendor/verified-cache/gitcache
+  SHARED_VENV_ROOT=/path/to/SWE-MiniSandbox/vendor/verified-cache/shared_venv
+  RUNTIME_ROOT=/path/to/SWE-MiniSandbox/.runtime/glm52-smoke-verified-v2 &&
+  bash /path/to/SWE-MiniSandbox/sh/run_minisweagent_gen.sh
